@@ -113,7 +113,7 @@ interface OpenApiOperation {
   parameters?: OpenApiParameter[];
   requestBody?: {
     required?: boolean;
-    content?: Record<string, { schema?: { $ref?: string } }>;
+    content?: Record<string, { schema?: Record<string, unknown> }>;
   };
   responses?: Record<string, unknown>;
   'x-processingMode'?: 'sync' | 'async';
@@ -213,9 +213,15 @@ function main(): void {
       const pathParams = parameters.filter((p) => p.in === 'path');
       const queryParams = parameters.filter((p) => p.in === 'query');
 
+      // A request body is either a named $ref or written inline. Both must be
+      // captured: four Forge operations use an inline `allOf`, and following
+      // only $ref would emit those tools with no body fields.
+      const bodySchemaRaw = operation.requestBody?.content?.['application/json']?.schema;
       const bodySchemaRef =
-        operation.requestBody?.content?.['application/json']?.schema?.$ref ?? undefined;
+        typeof bodySchemaRaw?.['$ref'] === 'string' ? bodySchemaRaw['$ref'] : undefined;
       const bodySchemaName = bodySchemaRef?.replace('#/components/schemas/', '');
+      const bodySchemaInline =
+        bodySchemaRaw !== undefined && bodySchemaRef === undefined ? bodySchemaRaw : undefined;
 
       const isDestructive = DESTRUCTIVE_OPERATION_IDS.has(operationId);
       const requiresConfirm = isDestructive || CONFIRM_REQUIRED_OPERATION_IDS.has(operationId);
@@ -253,6 +259,9 @@ function main(): void {
             })),
           )},`,
           `    bodySchema: ${bodySchemaName ? JSON.stringify(bodySchemaName) : 'undefined'},`,
+          `    bodySchemaInline: ${
+            bodySchemaInline === undefined ? 'undefined' : JSON.stringify(bodySchemaInline)
+          },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,

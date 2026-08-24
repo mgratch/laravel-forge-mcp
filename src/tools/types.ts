@@ -49,8 +49,20 @@ export interface OperationDescriptor {
   readonly processingMode: ProcessingMode;
   readonly pathParams: readonly OperationParameter[];
   readonly queryParams: readonly OperationParameter[];
-  /** Name of the request body schema in `components.schemas`, when there is one. */
+  /**
+   * Name of the request body schema in `components.schemas`, when the operation
+   * references one.
+   */
   readonly bodySchema: string | undefined;
+  /**
+   * The request body schema written inline in the OpenAPI document rather than
+   * referenced by name.
+   *
+   * Four Forge operations do this — including `POST .../servers`, which creates
+   * a machine — so an implementation that only follows `$ref` silently produces
+   * tools with no body fields at all.
+   */
+  readonly bodySchemaInline: Readonly<Record<string, unknown>> | undefined;
   readonly bodyRequired: boolean;
   /**
    * Destroys infrastructure or irreversibly removes data. Registered only when

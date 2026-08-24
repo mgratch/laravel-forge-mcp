@@ -226,6 +226,16 @@ describe('request assembly', () => {
     expect(request?.body).toEqual({ command: 'php artisan migrate --force' });
   });
 
+  it('rejects a non-scalar query parameter instead of sending [object Object]', async () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
+
+    await expect(
+      findTool(tools, 'list_servers').handler({ 'filter[name]': { evil: true } }),
+    ).rejects.toThrow(/must be a string, number or boolean/);
+    expect(stub.requests).toHaveLength(0);
+  });
+
   it('never leaks confirm or wait into the request body', async () => {
     const stub = stubFetch([{ status: 202 }]);
     const tools = makeRegistry(stub, {

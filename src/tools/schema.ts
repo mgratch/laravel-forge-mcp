@@ -198,6 +198,8 @@ export function buildInputSchema(options: {
   readonly pathParams: readonly OperationParameter[];
   readonly queryParams: readonly OperationParameter[];
   readonly bodySchemaName: string | undefined;
+  /** Inline body schema, for operations that do not use a `$ref`. */
+  readonly bodySchemaInline?: Readonly<Record<string, unknown>> | undefined;
   readonly bodyRequired: boolean;
   readonly registry: SchemaRegistry;
   readonly omitParams?: ReadonlySet<string>;
@@ -227,11 +229,13 @@ export function buildInputSchema(options: {
     if (param.required) required.push(param.name);
   }
 
-  if (options.bodySchemaName !== undefined) {
-    const bodySchema = resolveSchema(
-      { $ref: `#/components/schemas/${options.bodySchemaName}` },
-      options.registry,
-    );
+  const rawBodySchema =
+    options.bodySchemaName !== undefined
+      ? { $ref: `#/components/schemas/${options.bodySchemaName}` }
+      : options.bodySchemaInline;
+
+  if (rawBodySchema !== undefined) {
+    const bodySchema = resolveSchema(rawBodySchema, options.registry);
 
     const bodyProperties = isRecord(bodySchema['properties']) ? bodySchema['properties'] : {};
     const bodyRequired = Array.isArray(bodySchema['required'])

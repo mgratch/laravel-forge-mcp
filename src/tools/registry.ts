@@ -130,6 +130,7 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
       pathParams: descriptor.pathParams,
       queryParams: descriptor.queryParams,
       bodySchemaName: descriptor.bodySchema,
+      bodySchemaInline: descriptor.bodySchemaInline,
       bodyRequired: descriptor.bodyRequired,
       registry: schemas,
       omitParams,
@@ -218,7 +219,10 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
   for (const param of descriptor.queryParams) {
     const value = resolvedArgs[param.name];
     if (value === undefined || value === null) continue;
-    query[param.name] = value as string | number | boolean;
+    // Validated rather than cast: an object here would otherwise serialise as
+    // "[object Object]" and silently produce a wrong query, which surfaces as a
+    // confusing empty result instead of an error.
+    query[param.name] = stringifyParam(param.name, value);
     consumed.add(param.name);
   }
 
@@ -279,7 +283,9 @@ function extractBody(
   args: Record<string, unknown>,
   consumed: ReadonlySet<string>,
 ): unknown {
-  if (descriptor.bodySchema === undefined) return undefined;
+  if (descriptor.bodySchema === undefined && descriptor.bodySchemaInline === undefined) {
+    return undefined;
+  }
 
   const nested = args['body'];
   if (nested !== undefined) return nested;
