@@ -104,9 +104,7 @@ export class ForgeClient {
       } catch (error) {
         lastError = error;
 
-        const retryable =
-          error instanceof ForgeApiError ? error.isRetryable : isNetworkError(error);
-        if (!retryable || attempt === this.maxRetries) throw error;
+        if (!isSafeToRetry(error, options.method) || attempt === this.maxRetries) throw error;
       }
     }
 
@@ -304,9 +302,41 @@ function extractErrorMessage(body: unknown): string | undefined {
   return undefined;
 }
 
-/** Network-level failures (DNS, socket, abort) are worth retrying. */
+/** Network-level failures (DNS, socket, abort) leave the outcome unknown. */
 function isNetworkError(error: unknown): boolean {
   if (error instanceof TypeError) return true;
   if (error instanceof Error && error.name === 'AbortError') return true;
   return false;
+}
+
+/**
+ * Methods that can be repeated without changing the outcome.
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2
+ */
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
+
+/**
+ * Decides whether a failed request may be sent again.
+ *
+ * The status alone is not enough. A 5xx or a dropped connection means the
+ * outcome is *unknown*: Forge may have already created the resource and then
+ * failed while responding. Repeating a POST in that state can create a second
+ * server or a second backup, and this API offers no idempotency key to make
+ * that safe. Non-idempotent methods are therefore never retried on 5xx or
+ * network failure — the caller sees the error and decides, which is the only
+ * honest behaviour when the result is genuinely ambiguous.
+ *
+ * A 429 is different: the request was *rejected* without being processed, so
+ * repeating it is safe for any method.
+ */
+function isSafeToRetry(error: unknown, method: string): boolean {
+  const idempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
+
+  if (error instanceof ForgeApiError) {
+    if (error.status === 429) return true;
+    return idempotent && error.isRetryable;
+  }
+
+  return idempotent && isNetworkError(error);
 }

@@ -6,7 +6,10 @@
  * than silently shipping a broken tool.
  */
 
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { OPERATIONS } from '../src/generated/operations.js';
@@ -132,6 +135,51 @@ describe('generated operation table', () => {
     // catching harmless operations.
     expect(destructive.length).toBeGreaterThan(5);
     expect(destructive.length).toBeLessThan(40);
+  });
+
+  it('refuses to generate when a DELETE operation is unclassified', () => {
+    // Proves the classification fails CLOSED: a destructive operation added by
+    // a future spec cannot ship unguarded merely by being absent from the
+    // tables. Runs the real generator against a spec carrying one unknown
+    // DELETE and expects it to refuse.
+    const mutatedSpec = JSON.parse(readFileSync('./spec/forge.openapi.json', 'utf8')) as {
+      paths: Record<string, Record<string, unknown>>;
+    };
+
+    mutatedSpec.paths['/orgs/{organization}/servers/{server}/fictional-resource'] = {
+      delete: {
+        operationId: 'organizations.servers.fictional-resource.destroy',
+        summary: 'Delete a fictional resource',
+        description: 'Exists only in this test.',
+        tags: ['Servers'],
+        'x-processingMode': 'async',
+        parameters: [
+          { name: 'organization', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'server', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+      },
+    };
+
+    const directory = mkdtempSync(join(tmpdir(), 'forge-mcp-spec-'));
+    const specPath = join(directory, 'forge.openapi.json');
+
+    try {
+      writeFileSync(specPath, JSON.stringify(mutatedSpec), 'utf8');
+
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', 'scripts/generate-operations.ts'],
+        { encoding: 'utf8', env: { ...process.env, FORGE_SPEC_PATH: specPath } },
+      );
+
+      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(result.status, `generator should have failed:\n${output}`).not.toBe(0);
+      expect(output).toContain('organizations.servers.fictional-resource.destroy');
+      expect(output).toContain('not classified');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('requires confirmation for every destructive operation', () => {

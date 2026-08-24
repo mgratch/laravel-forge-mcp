@@ -157,6 +157,51 @@ describe('error mapping', () => {
     expect(stub.requests).toHaveLength(2);
   });
 
+  it('does not retry a POST after a 5xx, because the outcome is unknown', async () => {
+    // Forge may have created the resource and failed while responding; a retry
+    // would create a second one, and the API offers no idempotency key.
+    const stub = stubFetch([{ status: 500, body: { message: 'boom' } }]);
+
+    await expect(
+      makeClient(stub).request({ method: 'POST', path: '/orgs/acme/servers' }),
+    ).rejects.toThrow(ForgeApiError);
+    expect(stub.requests).toHaveLength(1);
+  });
+
+  it('does retry an idempotent PUT after a 5xx', async () => {
+    const stub = stubFetch([{ status: 500, body: { message: 'boom' } }, { status: 202 }]);
+
+    const result = await makeClient(stub).request({
+      method: 'PUT',
+      path: '/orgs/acme/servers/1/sites/2/nginx',
+      body: { config: 'server { }' },
+    });
+
+    expect(result.status).toBe(202);
+    expect(stub.requests).toHaveLength(2);
+  });
+
+  it('retries a POST after a 429, because the request was never processed', async () => {
+    const stub = stubFetch([
+      { status: 429, body: { message: 'slow down' }, headers: { 'retry-after': '1' } },
+      { status: 202 },
+    ]);
+
+    const result = await makeClient(stub).request({ method: 'POST', path: '/orgs/acme/servers' });
+
+    expect(result.status).toBe(202);
+    expect(stub.requests).toHaveLength(2);
+  });
+
+  it('does not retry a POST after a network failure', async () => {
+    const stub = stubFetch([{ throws: new TypeError('socket hang up') }]);
+
+    await expect(
+      makeClient(stub).request({ method: 'POST', path: '/orgs/acme/servers' }),
+    ).rejects.toThrow(TypeError);
+    expect(stub.requests).toHaveLength(1);
+  });
+
   it('classifies 429 as a rate-limit error carrying the retry delay', async () => {
     const stub = stubFetch([
       { status: 429, body: { message: 'Too many requests.' }, headers: { 'retry-after': '7' } },

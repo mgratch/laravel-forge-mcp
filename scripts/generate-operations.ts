@@ -24,7 +24,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SPEC_PATH = resolve(HERE, '../spec/forge.openapi.json');
+/**
+ * Path to the OpenAPI document. Overridable so tests can drive the generator
+ * against a mutated spec and assert that it fails closed.
+ */
+const SPEC_PATH = process.env['FORGE_SPEC_PATH'] ?? resolve(HERE, '../spec/forge.openapi.json');
 const OUT_PATH = resolve(HERE, '../src/generated/operations.ts');
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -83,6 +87,54 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
   'organizations.servers.services.redis.actions.store',
   'organizations.servers.services.supervisor.actions.store',
   'organizations.servers.services.php.actions.store',
+]);
+
+/**
+ * DELETE operations that have been reviewed and deliberately left unguarded.
+ *
+ * This list exists to make the safety classification **fail closed**. Without
+ * it, a destructive operation added to a future version of the Forge spec would
+ * simply not appear in either guard table and would ship as an ordinary tool —
+ * the classification would fail open, in the direction that costs someone their
+ * infrastructure.
+ *
+ * Generation therefore refuses to run when a DELETE operation appears in none
+ * of the three lists, forcing a human to decide which it belongs in. Everything
+ * here removes a rule, a log, a schedule or a similar recreatable resource, not
+ * a machine and not data.
+ */
+const REVIEWED_UNGUARDED_DELETE_OPERATION_IDS = new Set<string>([
+  'organizations.recipes.destroy',
+  'organizations.servers.background-processes.destroy',
+  'organizations.servers.firewall-rules.destroy',
+  'organizations.servers.logs.destroy',
+  'organizations.servers.monitors.destroy',
+  'organizations.servers.nginx.templates.destroy',
+  'organizations.servers.php.opcache.destroy',
+  'organizations.servers.scheduled-jobs.destroy',
+  'organizations.servers.sites.commands.destroy',
+  'organizations.servers.sites.composer.credentials.destroy',
+  'organizations.servers.sites.deployments.push-to-deploy.destroy',
+  'organizations.servers.sites.deployments.status.destroy',
+  'organizations.servers.sites.domains.certificates.destroy',
+  'organizations.servers.sites.domains.destroy',
+  'organizations.servers.sites.heartbeats.destroy',
+  'organizations.servers.sites.integrations.horizon.destroy',
+  'organizations.servers.sites.integrations.laravel-maintenance.destroy',
+  'organizations.servers.sites.integrations.laravel-scheduler.destroy',
+  'organizations.servers.sites.integrations.octane.destroy',
+  'organizations.servers.sites.integrations.pulse.destroy',
+  'organizations.servers.sites.integrations.reverb.destroy',
+  'organizations.servers.sites.logs.application.destroy',
+  'organizations.servers.sites.logs.nginx-access.destroy',
+  'organizations.servers.sites.logs.nginx-error.destroy',
+  'organizations.servers.sites.npm.credentials.destroy',
+  'organizations.servers.sites.redirect-rules.destroy',
+  'organizations.servers.sites.scheduled-jobs.destroy',
+  'organizations.servers.sites.security-rules.destroy',
+  'organizations.servers.sites.webhooks.destroy',
+  'organizations.teams.invites.destroy',
+  'organizations.teams.recipes.destroy',
 ]);
 
 /**
@@ -183,6 +235,7 @@ function main(): void {
   const seenOperationIds = new Set<string>();
   let destructiveCount = 0;
   let confirmCount = 0;
+  const unclassifiedDeletes: string[] = [];
 
   for (const [path, pathItem] of Object.entries(spec.paths)) {
     for (const method of HTTP_METHODS) {
@@ -222,6 +275,15 @@ function main(): void {
       const bodySchemaName = bodySchemaRef?.replace('#/components/schemas/', '');
       const bodySchemaInline =
         bodySchemaRaw !== undefined && bodySchemaRef === undefined ? bodySchemaRaw : undefined;
+
+      if (
+        method === 'delete' &&
+        !DESTRUCTIVE_OPERATION_IDS.has(operationId) &&
+        !CONFIRM_REQUIRED_OPERATION_IDS.has(operationId) &&
+        !REVIEWED_UNGUARDED_DELETE_OPERATION_IDS.has(operationId)
+      ) {
+        unclassifiedDeletes.push(operationId);
+      }
 
       const isDestructive = DESTRUCTIVE_OPERATION_IDS.has(operationId);
       const requiresConfirm = isDestructive || CONFIRM_REQUIRED_OPERATION_IDS.has(operationId);
@@ -273,13 +335,31 @@ function main(): void {
 
   // Fail loudly if an override no longer matches the spec, rather than quietly
   // shipping an unguarded destructive tool.
-  for (const id of [...DESTRUCTIVE_OPERATION_IDS, ...CONFIRM_REQUIRED_OPERATION_IDS]) {
+  for (const id of [
+    ...DESTRUCTIVE_OPERATION_IDS,
+    ...CONFIRM_REQUIRED_OPERATION_IDS,
+    ...REVIEWED_UNGUARDED_DELETE_OPERATION_IDS,
+  ]) {
     if (!seenOperationIds.has(id)) {
       throw new Error(
         `Override references unknown operationId "${id}". ` +
           'The Forge spec changed — re-check the guard tables in scripts/generate-operations.ts.',
       );
     }
+  }
+
+  // Fail closed: every DELETE must be explicitly classified. A destructive
+  // operation added by a future spec would otherwise ship unguarded simply by
+  // being absent from the tables.
+  if (unclassifiedDeletes.length > 0) {
+    throw new Error(
+      `${unclassifiedDeletes.length} DELETE operation(s) are not classified:\n` +
+        unclassifiedDeletes.map((id) => `  - ${id}`).join('\n') +
+        '\n\nAdd each to DESTRUCTIVE_OPERATION_IDS (destroys infrastructure or data), ' +
+        'CONFIRM_REQUIRED_OPERATION_IDS (interrupts a live service), or ' +
+        'REVIEWED_UNGUARDED_DELETE_OPERATION_IDS (removes something recreatable) ' +
+        'in scripts/generate-operations.ts.',
+    );
   }
 
   const header = `/**

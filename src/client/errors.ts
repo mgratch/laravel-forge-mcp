@@ -50,6 +50,9 @@ export class ForgeApiError extends ForgeError {
    * 429 is retryable after the rate-limit window; 5xx are transient server
    * faults. 4xx other than 429 indicate a malformed or unauthorised request and
    * will fail identically on retry.
+   *
+   * Note this asks only whether the *status* is transient. Whether the request
+   * is safe to repeat also depends on the method — see `isSafeToRetry`.
    */
   public get isRetryable(): boolean {
     return this.status === 429 || (this.status >= 500 && this.status <= 599);
