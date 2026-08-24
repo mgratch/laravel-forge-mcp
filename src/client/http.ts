@@ -215,8 +215,7 @@ export class ForgeClient {
   }
 
   private buildUrl(path: string, query: RequestOptions['query']): string {
-    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-    const url = new URL(`${this.baseUrl}${normalizedPath}`);
+    const url = new URL(this.resolveUrl(path));
 
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value === undefined) continue;
@@ -224,6 +223,40 @@ export class ForgeClient {
     }
 
     return url.toString();
+  }
+
+  /**
+   * Resolves a request target that may be a bare path, an API-prefixed link, or
+   * an absolute URL.
+   *
+   * JSON:API `self` links come back in whatever form Forge chose, and blindly
+   * concatenating them onto the base URL produces `/api/api/orgs/...` or an
+   * absolute URL glued after the base. Cross-origin links are refused outright
+   * so a link in a response can never redirect an authenticated request
+   * carrying the bearer token to another host.
+   */
+  private resolveUrl(pathOrUrl: string): string {
+    const base = new URL(this.baseUrl);
+
+    if (/^https?:\/\//i.test(pathOrUrl)) {
+      const absolute = new URL(pathOrUrl);
+      if (absolute.origin !== base.origin) {
+        throw new ForgeConfigurationError(
+          `Refusing to follow a cross-origin link: ${absolute.origin} is not ${base.origin}.`,
+        );
+      }
+      return absolute.toString();
+    }
+
+    const normalized = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+    const basePath = base.pathname.replace(/\/+$/, '');
+
+    // The link already carries the API prefix (for example "/api/orgs/...").
+    if (basePath !== '' && (normalized === basePath || normalized.startsWith(`${basePath}/`))) {
+      return `${base.origin}${normalized}`;
+    }
+
+    return `${base.origin}${basePath}${normalized}`;
   }
 
   private toError(response: Response, method: string, url: string, body: unknown): ForgeApiError {

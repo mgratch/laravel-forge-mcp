@@ -73,6 +73,9 @@ const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
   'organizations.teams.servers.store',
   'organizations.teams.server-credentials.store',
   'organizations.teams.recipes.store',
+  'organizations.teams.invites.destroy',
+  'organizations.teams.recipes.destroy',
+  'organizations.roles.update',
   'organizations.teams.members.destroy',
   'organizations.teams.servers.destroy',
   'organizations.teams.server-credentials.destroy',
@@ -141,9 +144,6 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.versions.configs.cli.update',
 
   // Team and access mutation — changes who can reach the infrastructure.
-  'organizations.teams.invites.destroy',
-  'organizations.teams.recipes.destroy',
-  'organizations.roles.update',
 ]);
 
 /**
@@ -261,6 +261,8 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
  * destructive operation cannot ship with an unbound confirmation.
  */
 const CONFIRMATION_TARGET_FIELDS: Record<string, readonly string[]> = {
+  // Detaching vs destroying is a query argument, and changes the consequence.
+  'organizations.servers.destroy': ['preserve_at_provider'],
   // Target server lives in the body, not the path.
   'organizations.servers.archives.store': ['server_id'],
   // Restores overwrite a caller-selected database.
@@ -322,8 +324,111 @@ interface OpenApiOperation {
 interface OpenApiDocument {
   info: { title: string; version: string };
   servers?: Array<{ url: string }>;
-  paths: Record<string, Record<string, OpenApiOperation>>;
+  paths: Record<string, Record<string, OpenApiOperation | undefined>>;
   components?: { schemas?: Record<string, unknown> };
+}
+
+/**
+ * Collects every argument name an operation accepts: path, query and request
+ * body, resolving `$ref` and `allOf`.
+ *
+ * Used to verify the confirmation-target overrides against the actual schema. A
+ * configured field that no longer exists would be silently omitted from the
+ * phrase at runtime — because its value is simply `undefined` — leaving the
+ * confirmation unbound from the target it was meant to name.
+ */
+function collectArgumentNames(
+  operation: OpenApiOperation,
+  schemas: Record<string, unknown>,
+): Set<string> {
+  const names = new Set<string>();
+
+  for (const parameter of operation.parameters ?? []) {
+    if (parameter.in === 'path' || parameter.in === 'query') names.add(parameter.name);
+  }
+
+  const visit = (node: unknown, depth: number): void => {
+    if (depth > 6 || typeof node !== 'object' || node === null) return;
+    const record = node as Record<string, unknown>;
+
+    const ref = record['$ref'];
+    if (typeof ref === 'string') {
+      visit(schemas[ref.replace('#/components/schemas/', '')], depth + 1);
+      return;
+    }
+
+    for (const key of ['allOf', 'anyOf', 'oneOf']) {
+      const branches = record[key];
+      if (Array.isArray(branches)) for (const branch of branches) visit(branch, depth + 1);
+    }
+
+    const properties = record['properties'];
+    if (typeof properties === 'object' && properties !== null) {
+      for (const name of Object.keys(properties)) names.add(name);
+    }
+  };
+
+  visit(operation.requestBody?.content?.['application/json']?.schema, 0);
+  return names;
+}
+
+/**
+ * Whether an asynchronous operation can actually be observed to completion.
+ *
+ * Derived from the document rather than inferred from the HTTP method: an
+ * operation is pollable only when the same path exposes a GET whose response
+ * carries a `status` or `state` field. Method-based inference gets this wrong in
+ * both directions — `DELETE .../deployments/status` *resets* state rather than
+ * removing a resource, so waiting for a 404 would hang, and an nginx config PUT
+ * reads back content with no status at all, which a status poll would treat as
+ * instantly finished.
+ */
+function isPollable(
+  path: string,
+  document: OpenApiDocument,
+  schemas: Record<string, unknown>,
+): boolean {
+  const getOperation = document.paths[path]?.['get'];
+  if (!getOperation) return false;
+
+  const responses: Record<string, unknown> = getOperation.responses ?? {};
+  for (const code of ['200', '201']) {
+    const response = responses[code];
+    if (typeof response !== 'object' || response === null) continue;
+
+    const content = (response as { content?: Record<string, { schema?: unknown }> }).content ?? {};
+    for (const media of Object.values(content)) {
+      const names = new Set<string>();
+      const visit = (node: unknown, depth: number): void => {
+        if (depth > 6 || typeof node !== 'object' || node === null) return;
+        const record = node as Record<string, unknown>;
+
+        const ref = record['$ref'];
+        if (typeof ref === 'string') {
+          visit(schemas[ref.replace('#/components/schemas/', '')], depth + 1);
+          return;
+        }
+
+        for (const key of ['allOf', 'anyOf', 'oneOf']) {
+          const branches = record[key];
+          if (Array.isArray(branches)) for (const branch of branches) visit(branch, depth + 1);
+        }
+
+        const properties = record['properties'];
+        if (typeof properties === 'object' && properties !== null) {
+          const bag = properties as Record<string, unknown>;
+          for (const name of Object.keys(bag)) names.add(name);
+          visit(bag['data'], depth + 1);
+          visit(bag['attributes'], depth + 1);
+        }
+      };
+
+      visit(media.schema, 0);
+      if (names.has('status') || names.has('state')) return true;
+    }
+  }
+
+  return false;
 }
 
 /** Strips the Mintlify "Processing mode: <small><code>sync</code></small>" footer. */
@@ -386,6 +491,8 @@ function main(): void {
   const unclassifiedMutations: string[] = [];
   const doubleClassified: string[] = [];
   const unboundConfirmations: string[] = [];
+  const invalidTargetFields: string[] = [];
+  const schemaComponents = spec.components?.schemas ?? {};
 
   for (const [path, pathItem] of Object.entries(spec.paths)) {
     for (const method of HTTP_METHODS) {
@@ -441,10 +548,21 @@ function main(): void {
       const isDestructive = DESTRUCTIVE_OPERATION_IDS.has(operationId);
       const requiresConfirm = isDestructive || CONFIRM_REQUIRED_OPERATION_IDS.has(operationId);
 
+      const targetFields = CONFIRMATION_TARGET_FIELDS[operationId] ?? [];
+
       if (requiresConfirm) {
         const hasPathTarget = pathParams.some((param) => param.name !== 'organization');
-        const hasBodyTarget = (CONFIRMATION_TARGET_FIELDS[operationId] ?? []).length > 0;
-        if (!hasPathTarget && !hasBodyTarget) unboundConfirmations.push(operationId);
+        if (!hasPathTarget && targetFields.length === 0) unboundConfirmations.push(operationId);
+
+        // A configured field that no longer exists in the schema is worse than
+        // no entry at all: it looks bound while contributing nothing, because
+        // its value is always undefined.
+        const available = collectArgumentNames(operation, schemaComponents);
+        for (const field of targetFields) {
+          if (!available.has(field)) {
+            invalidTargetFields.push(`${operationId} -> "${field}"`);
+          }
+        }
       }
       if (isDestructive) destructiveCount += 1;
       if (requiresConfirm) confirmCount += 1;
@@ -484,9 +602,8 @@ function main(): void {
             bodySchemaInline === undefined ? 'undefined' : JSON.stringify(bodySchemaInline)
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
-          `    confirmationTargetFields: ${JSON.stringify(
-            CONFIRMATION_TARGET_FIELDS[operationId] ?? [],
-          )},`,
+          `    confirmationTargetFields: ${JSON.stringify(targetFields)},`,
+          `    pollable: ${isPollable(path, spec, schemaComponents)},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,
           '  },',
@@ -535,6 +652,16 @@ function main(): void {
         unboundConfirmations.map((id) => `  - ${id}`).join('\n') +
         '\n\nAdd the identifying request-body field(s) to CONFIRMATION_TARGET_FIELDS in ' +
         'scripts/generate-operations.ts.',
+    );
+  }
+
+  if (invalidTargetFields.length > 0) {
+    throw new Error(
+      `${invalidTargetFields.length} confirmation target field(s) do not exist in their ` +
+        `operation's path, query or request body:\n` +
+        invalidTargetFields.map((entry) => `  - ${entry}`).join('\n') +
+        '\n\nForge renamed or removed them. Update CONFIRMATION_TARGET_FIELDS in ' +
+        'scripts/generate-operations.ts — a stale entry leaves the confirmation unbound.',
     );
   }
 

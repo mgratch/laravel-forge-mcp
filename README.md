@@ -111,14 +111,14 @@ See [`docs/TOOLS.md`](docs/TOOLS.md) for the full catalog, including which tools
 
 ## What the client handles for you
 
-| Concern                                                                          | Behaviour                                                                                                                             |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                   |
-| [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations return `202 Accepted`. Tools for them accept `wait: true` to poll with exponential backoff until the resource settles. |
-| [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                  |
-| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                         |
-| Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.        |
-| Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                    |
+| Concern                                                                          | Behaviour                                                                                                                                                     |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                                           |
+| [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations return `202 Accepted`. `wait: true` is advertised only where the spec exposes a pollable status, so no tool promises a wait it cannot perform. |
+| [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                                          |
+| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                                                 |
+| Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.                                |
+| Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                                            |
 
 ## Examples
 
@@ -132,11 +132,22 @@ Read a site's live nginx configuration:
 Update it, then restart nginx (note the confirmation):
 
 ```jsonc
-// tool: update_servers_sites_nginx
-{ "server": 12345, "site": 67890, "config": "server {\n  client_max_body_size 30M;\n  …\n}" }
+// tool: update_servers_sites_nginx — confirmation-gated, because the API has no
+// validation step and a bad write can take the site down
+{
+  "server": 12345,
+  "site": 67890,
+  "config": "server {\n  client_max_body_size 30M;\n  …\n}",
+  "confirm": "update_servers_sites_nginx server=12345 site=67890"
+}
 
-// tool: create_servers_services_nginx_actions
-{ "server": 12345, "action": "reboot", "confirm": "POST server=12345" }
+// tool: create_servers_services_nginx_actions — `action` is part of the phrase,
+// so a confirmation for a reboot cannot authorise a stop
+{
+  "server": 12345,
+  "action": "reboot",
+  "confirm": "create_servers_services_nginx_actions server=12345 action=reboot"
+}
 ```
 
 > The current API has **no `nginx -t` equivalent**. A bad configuration write returns `202` and can
@@ -147,8 +158,13 @@ Deploy and wait for the result:
 
 ```jsonc
 // tool: create_servers_sites_deployments
-{ "server": 12345, "site": 67890, "wait": true }
+{ "server": 12345, "site": 67890 }
+// then poll: get_servers_sites_deployments_status
 ```
+
+`wait: true` is offered only on operations whose own path exposes a readable
+status — 26 of the API's 105 asynchronous operations. Everything else tells you
+what to re-read instead of pretending to wait.
 
 Run a command and collect its output:
 

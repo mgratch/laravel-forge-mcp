@@ -540,3 +540,38 @@ describe('pollUntilAbsent', () => {
     ).rejects.toThrow(ForgeApiError);
   });
 });
+
+describe('self link resolution', () => {
+  it('does not double the API prefix on an /api-prefixed link', async () => {
+    const stub = stubFetch([{ body: {} }]);
+    await makeClient(stub).request({ method: 'GET', path: '/api/orgs/acme/servers/1' });
+
+    expect(stub.requests[0]?.url).toBe('https://forge.laravel.com/api/orgs/acme/servers/1');
+  });
+
+  it('accepts a bare path', async () => {
+    const stub = stubFetch([{ body: {} }]);
+    await makeClient(stub).request({ method: 'GET', path: '/orgs/acme/servers/1' });
+
+    expect(stub.requests[0]?.url).toBe('https://forge.laravel.com/api/orgs/acme/servers/1');
+  });
+
+  it('accepts an absolute same-origin link', async () => {
+    const stub = stubFetch([{ body: {} }]);
+    await makeClient(stub).request({
+      method: 'GET',
+      path: 'https://forge.laravel.com/api/orgs/acme/servers/1',
+    });
+
+    expect(stub.requests[0]?.url).toBe('https://forge.laravel.com/api/orgs/acme/servers/1');
+  });
+
+  it('refuses a cross-origin link rather than sending the token elsewhere', async () => {
+    const stub = stubFetch([]);
+
+    await expect(
+      makeClient(stub).request({ method: 'GET', path: 'https://evil.example/api/orgs/acme' }),
+    ).rejects.toThrow(/cross-origin/i);
+    expect(stub.requests).toHaveLength(0);
+  });
+});

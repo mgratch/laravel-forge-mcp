@@ -74,6 +74,14 @@ export interface OperationDescriptor {
    */
   readonly confirmationTargetFields: readonly string[];
   /**
+   * Whether completion can actually be observed.
+   *
+   * True only when the same path exposes a GET whose response carries a
+   * `status` or `state` field. Derived from the document rather than inferred
+   * from the HTTP method, which is wrong in both directions — see the generator.
+   */
+  readonly pollable: boolean;
+  /**
    * Destroys infrastructure or irreversibly removes data. Registered only when
    * `FORGE_MCP_ALLOW_DESTRUCTIVE=1`.
    */

@@ -53,7 +53,9 @@ function renderRow(operation: OperationDescriptor): string {
   const flags: string[] = [];
   if (operation.destructive) flags.push('**destructive**');
   else if (operation.requiresConfirm) flags.push('**confirm**');
-  if (operation.processingMode === 'async') flags.push('async');
+  if (operation.processingMode === 'async') {
+    flags.push(operation.pollable ? 'async, pollable' : 'async');
+  }
 
   return [
     '',
@@ -78,6 +80,9 @@ function main(): void {
     (operation) => operation.requiresConfirm && !operation.destructive,
   );
   const asyncCount = OPERATIONS.filter((operation) => operation.processingMode === 'async').length;
+  const pollableCount = OPERATIONS.filter(
+    (operation) => operation.processingMode === 'async' && operation.pollable,
+  ).length;
 
   const lines: string[] = [
     '<!-- GENERATED FILE — run `npm run docs` to regenerate. -->',
@@ -87,7 +92,7 @@ function main(): void {
     `Every tool below maps to exactly one operation in the [Laravel Forge API](https://forge.laravel.com/docs/api-reference/introduction).`,
     '',
     `- **${OPERATIONS.length}** tools total`,
-    `- **${asyncCount}** are asynchronous and accept \`wait: true\` to poll until the operation settles`,
+    `- **${asyncCount}** are asynchronous; **${pollableCount}** of those expose a status that can be polled and accept \`wait: true\``,
     `- **${destructive.length}** are destructive and registered only when \`FORGE_MCP_ALLOW_DESTRUCTIVE=1\``,
     `- **${destructive.length + confirmOnly.length}** require a matching \`confirm\` argument`,
     '',
@@ -104,8 +109,8 @@ function main(): void {
     '| `filter[…]` | list tools | [Exact-match filters](https://forge.laravel.com/docs/api-reference/filtering). No operators. |',
     '| `sort` | list tools | Field name, `-` prefix to reverse, comma-separated for multiple. |',
     '| `include` | a few list tools | [Relationship includes](https://forge.laravel.com/docs/api-reference/relationships). |',
-    '| `wait` | async tools | Poll the resource until it reaches a terminal state. Costs extra requests. |',
-    '| `confirm` | guarded tools | Must equal `"<METHOD> <param>=<value> …"` naming the target, e.g. `"DELETE server=12345"`. |',
+    '| `wait` | pollable async tools | Poll until the resource reaches a terminal state. Advertised only where the API exposes a readable status. |',
+    '| `confirm` | guarded tools | Must equal the tool name followed by its target fields, e.g. `"delete_servers server=12345"`. Each tool documents its own exact form. |',
     '',
   ];
 

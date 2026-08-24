@@ -36,6 +36,7 @@ export const NON_TERMINAL_STATES: ReadonlySet<string> = new Set([
   'syncing',
   'restoring',
   'deleting',
+  'removing',
 ]);
 
 export interface PollOptions {

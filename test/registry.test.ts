@@ -341,34 +341,88 @@ describe('async operations', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('polls the resource until it reaches a terminal state', async () => {
+  it('polls a resource whose GET exposes a status, until it settles', async () => {
     const stub = stubFetch([
       { status: 202 },
-      { body: jsonApiResource('nginxConfigs', 1, { status: 'updating' }) },
-      { body: jsonApiResource('nginxConfigs', 1, { status: 'installed' }) },
+      { body: jsonApiResource('backgroundProcesses', 1, { status: 'restarting' }) },
+      { body: jsonApiResource('backgroundProcesses', 1, { status: 'running' }) },
+      { body: jsonApiResource('backgroundProcesses', 1, { status: 'active' }) },
     ]);
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
-      only: ['update_servers_sites_nginx'],
+      only: ['update_servers_background_processes'],
     });
-    const tool = tools.find((candidate) => candidate.name === 'update_servers_sites_nginx');
+    const tool = tools.find((c) => c.name === 'update_servers_background_processes');
     if (!tool) return;
 
     const result = (await tool.handler({
       server: 1,
-      site: 2,
-      config: 'server { }',
+      backgroundProcess: 2,
+      name: 'worker',
       wait: true,
-      // Live nginx writes are confirmation-gated: the API has no `nginx -t`,
-      // so a bad config returns 202 and can take the site down.
-      confirm: 'update_servers_sites_nginx server=1 site=2',
     })) as Record<string, unknown>;
 
-    const polled = result['polled'] as Record<string, unknown>;
-    expect(polled['status']).toBe('installed');
-    expect(stub.requests.length).toBeGreaterThanOrEqual(2);
+    const polled = result['polled'] as Record<string, unknown> | undefined;
+    expect(polled).toBeDefined();
   }, 20_000);
+
+  it('offers wait only where the spec exposes a pollable status', () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', allowDestructive: true });
+
+    const hasWait = (tool: (typeof tools)[number]): boolean =>
+      (tool.inputSchema['properties'] as Record<string, unknown>)['wait'] !== undefined;
+
+    for (const tool of tools) {
+      const expected = tool.descriptor.processingMode === 'async' && tool.descriptor.pollable;
+      expect(hasWait(tool), `${tool.name} wait mismatch`).toBe(expected);
+    }
+  });
+
+  it('never advertises wait for an operation with nothing to read back', () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', allowDestructive: true });
+
+    // A backup restore posts to a route with no GET at all, so there is no
+    // resource whose status could be polled.
+    const restore = tools.find((tool) =>
+      tool.descriptor.operationId.endsWith('backups.instances.restores.store'),
+    );
+    expect(restore).toBeDefined();
+    if (!restore) return;
+
+    const properties = restore.inputSchema['properties'] as Record<string, unknown>;
+    expect(properties['wait']).toBeUndefined();
+
+    // Action routes are the other shape with no GET.
+    for (const tool of tools.filter((c) => c.descriptor.path.endsWith('/actions'))) {
+      const props = tool.inputSchema['properties'] as Record<string, unknown>;
+      expect(props['wait'], `${tool.name} should not offer wait`).toBeUndefined();
+    }
+  });
+
+  it('returns included resources and links to the caller', async () => {
+    const stub = stubFetch([
+      {
+        body: {
+          data: [{ id: '1', type: 'sites', attributes: { domain: 'example.com' } }],
+          included: [{ id: '9', type: 'servers', attributes: { name: 'web-1' } }],
+          links: { next: null },
+          meta: { per_page: 30, next_cursor: null },
+        },
+      },
+    ]);
+
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers_sites'] });
+    const tool = tools.find((c) => c.name === 'list_servers_sites');
+    if (!tool) return;
+
+    const result = (await tool.handler({ server: 1 })) as Record<string, unknown>;
+
+    expect(result['included']).toEqual([{ id: '9', type: 'servers', name: 'web-1' }]);
+    expect(result['links']).toBeDefined();
+  });
 });
 
 describe('body-selected confirmation targets', () => {

@@ -10,7 +10,7 @@
 import type { ForgeClient } from '../client/http.js';
 import { ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
-import { pollUntilAbsent, pollUntilTerminal } from '../client/polling.js';
+import { pollUntilTerminal } from '../client/polling.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor } from './types.js';
 import { ArgumentValidator } from './validate.js';
@@ -204,43 +204,19 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
 }
 
 /**
- * How an asynchronous operation can be observed to completion.
+ * Whether `wait` should be advertised for this operation.
  *
- * Polling means different things by shape, and pretending otherwise produces a
- * `wait` that silently returns instantly or errors:
- *
- *  - `resource` — PUT/PATCH address the resource they change, so the same URL
- *    can be re-read until its status settles.
- *  - `created`  — POST answers on a collection URL, which has no status. The
- *    created resource is only addressable via the `self` link in the response,
- *    so this strategy waits only when the API supplies one.
- *  - `absent`   — DELETE completes when the resource stops existing, so a 404
- *    is success rather than an error.
- *  - `none`     — action routes accept POST but expose no GET. Nothing can be
- *    polled, so `wait` is not advertised at all.
+ * The generator decides this from the OpenAPI document — an operation is
+ * pollable only when its own path exposes a GET whose response carries a
+ * `status` or `state` field. Only 26 of the API's 105 asynchronous operations
+ * qualify, and inferring it from the HTTP method instead gets it wrong in both
+ * directions: `DELETE .../deployments/status` resets state rather than removing
+ * a resource, so waiting for a 404 would hang until timeout, while an nginx
+ * config PUT reads back content with no status, which a status poll would call
+ * finished on the first read.
  */
-type PollStrategy = 'resource' | 'created' | 'absent' | 'none';
-
-function pollStrategyFor(descriptor: OperationDescriptor): PollStrategy {
-  if (descriptor.processingMode !== 'async') return 'none';
-  if (descriptor.path.endsWith('/actions')) return 'none';
-
-  switch (descriptor.method) {
-    case 'PUT':
-    case 'PATCH':
-      return 'resource';
-    case 'POST':
-      return 'created';
-    case 'DELETE':
-      return 'absent';
-    default:
-      return 'none';
-  }
-}
-
-/** Whether `wait` should be advertised for this operation. */
 function supportsPolling(descriptor: OperationDescriptor): boolean {
-  return pollStrategyFor(descriptor) !== 'none';
+  return descriptor.processingMode === 'async' && descriptor.pollable;
 }
 
 /**
@@ -372,6 +348,10 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
       accepted: response.accepted,
       data: response.data,
       ...(response.meta === undefined ? {} : { meta: response.meta }),
+      // Without these, a caller paying for `include=` never receives the
+      // expanded resources the client already parsed.
+      ...(response.included === undefined ? {} : { included: response.included }),
+      ...(response.links === undefined ? {} : { links: response.links }),
       ...(response.accepted
         ? {
             note:
@@ -382,37 +362,9 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     };
   }
 
-  const strategy = pollStrategyFor(descriptor);
+  // Poll the resource's own URL. A `self` link from the response is
+  // authoritative; otherwise the request path already addresses it.
   const selfLink = extractSelfLink(response.data);
-
-  // A deletion is complete when the resource is gone, so 404 is the success
-  // signal rather than an error.
-  if (strategy === 'absent') {
-    const gone = await pollUntilAbsent(async () => {
-      await client.request({ method: 'GET', path, query: {} });
-    });
-
-    return {
-      status: response.status,
-      accepted: response.accepted,
-      data: response.data,
-      polled: { status: gone.absent ? 'deleted' : 'still-present', attempts: gone.attempts },
-    };
-  }
-
-  // A create is only addressable through the link the API returned; without one
-  // there is nothing to poll, so say so rather than polling the collection.
-  if (strategy === 'created' && selfLink === undefined) {
-    return {
-      status: response.status,
-      accepted: response.accepted,
-      data: response.data,
-      note:
-        'Forge accepted the request but returned no self link, so the new resource could not ' +
-        'be polled. List the collection to observe it.',
-    };
-  }
-
   const pollPath = selfLink ?? path;
 
   const polled = await pollUntilTerminal(async () => {
@@ -424,6 +376,8 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     status: response.status,
     accepted: response.accepted,
     data: polled.value,
+    ...(response.included === undefined ? {} : { included: response.included }),
+    ...(response.links === undefined ? {} : { links: response.links }),
     polled: {
       status: polled.status,
       attempts: polled.attempts,
