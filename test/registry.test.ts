@@ -360,12 +360,80 @@ describe('async operations', () => {
       site: 2,
       config: 'server { }',
       wait: true,
+      // Live nginx writes are confirmation-gated: the API has no `nginx -t`,
+      // so a bad config returns 202 and can take the site down.
+      confirm: 'update_servers_sites_nginx server=1 site=2',
     })) as Record<string, unknown>;
 
     const polled = result['polled'] as Record<string, unknown>;
     expect(polled['status']).toBe('installed');
     expect(stub.requests.length).toBeGreaterThanOrEqual(2);
   }, 20_000);
+});
+
+describe('body-selected confirmation targets', () => {
+  it('binds a target carried in the request body, not the path', () => {
+    // POST /orgs/{org}/servers/archives takes the server in ArchiveRequest, so
+    // a phrase built from path ids alone is identical for every server.
+    const archive = OPERATIONS.find(
+      (operation) => operation.operationId === 'organizations.servers.archives.store',
+    );
+    expect(archive).toBeDefined();
+    if (!archive) return;
+
+    expect(archive.confirmationTargetFields.length).toBeGreaterThan(0);
+
+    const phrase = buildConfirmationPhrase(
+      archive,
+      { organization: 'acme', server_id: 12345 },
+      true,
+    );
+    expect(phrase).toBe('create_servers_archives server_id=12345');
+  });
+
+  it('will not let one archive confirmation authorise a different server', async () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['create_servers_archives'],
+    });
+    const tool = tools.find((candidate) => candidate.name === 'create_servers_archives');
+    if (!tool) return;
+
+    await expect(
+      tool.handler({ server_id: 99999, confirm: 'create_servers_archives server_id=12345' }),
+    ).rejects.toThrow(ForgeConfirmationError);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('every guarded operation has a target bound into its phrase', () => {
+    for (const operation of OPERATIONS.filter((candidate) => candidate.requiresConfirm)) {
+      const hasPathTarget = operation.pathParams.some((param) => param.name !== 'organization');
+      const hasBodyTarget = operation.confirmationTargetFields.length > 0;
+
+      expect(
+        hasPathTarget || hasBodyTarget,
+        `${operation.name} has an unbound confirmation phrase`,
+      ).toBe(true);
+    }
+  });
+
+  it('documents the format the runtime actually enforces', () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', allowDestructive: true });
+
+    for (const tool of tools.filter((candidate) => candidate.descriptor.requiresConfirm)) {
+      const properties = tool.inputSchema['properties'] as Record<string, unknown>;
+      const confirm = properties['confirm'] as Record<string, unknown>;
+      const description = String(confirm['description']);
+
+      // The documented example must lead with the tool name, as the runtime
+      // requires. A stale format guarantees a failed first attempt.
+      expect(description, `${tool.name} documents a stale confirm format`).toContain(tool.name);
+      expect(description).not.toContain('<METHOD>');
+    }
+  });
 });
 
 describe('tool metadata', () => {

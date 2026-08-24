@@ -155,20 +155,54 @@ export class RateLimiter {
     if (snapshot.limit === undefined && snapshot.remaining === undefined) return;
 
     const previous = this.serverState;
-    const sameWindow = previous !== undefined && previous.reset === snapshot.reset;
+    if (previous === undefined) {
+      this.serverState = snapshot;
+      return;
+    }
 
+    const incomingDeadline = this.absoluteResetMs(snapshot.reset);
+    const currentDeadline = this.absoluteResetMs(previous.reset);
+
+    // A delayed response from an *older* window says nothing about the current
+    // one. Adopting it would discard a budget that has already been spent.
+    if (
+      incomingDeadline !== undefined &&
+      currentDeadline !== undefined &&
+      incomingDeadline < currentDeadline
+    ) {
+      return;
+    }
+
+    const sameWindow =
+      incomingDeadline !== undefined &&
+      currentDeadline !== undefined &&
+      incomingDeadline === currentDeadline;
+
+    // Within one window, responses can arrive out of order, so a larger
+    // remaining count is stale: keep the more conservative view.
     if (
       sameWindow &&
       previous.remaining !== undefined &&
       snapshot.remaining !== undefined &&
       snapshot.remaining > previous.remaining
     ) {
-      // Keep the more conservative view; adopt any other fields.
       this.serverState = { ...snapshot, remaining: previous.remaining };
       return;
     }
 
     this.serverState = snapshot;
+  }
+
+  /**
+   * Normalises a reset value to an absolute epoch-millisecond deadline.
+   *
+   * Forge sends an absolute timestamp, but some proxies rewrite it to a
+   * relative delta; comparing windows requires one representation.
+   */
+  private absoluteResetMs(reset: number | undefined): number | undefined {
+    if (reset === undefined) return undefined;
+    const looksAbsolute = reset > 1_000_000_000;
+    return looksAbsolute ? reset * 1000 : this.now() + reset * 1000;
   }
 
   /** Current view of the budget, for diagnostics. */

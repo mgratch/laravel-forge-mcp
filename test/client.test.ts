@@ -7,6 +7,7 @@ import {
 } from '../src/client/errors.js';
 import { ForgeClient } from '../src/client/http.js';
 import { extractNextCursor, extractSelfLink, normalizeResponse } from '../src/client/jsonapi.js';
+import { pollUntilAbsent } from '../src/client/polling.js';
 import {
   RateLimiter,
   parseRateLimitHeaders,
@@ -461,6 +462,20 @@ describe('rate limiting', () => {
     expect(limiter.snapshot.remaining).toBe(0);
   });
 
+  it('ignores an observation from an older reset window', () => {
+    // A delayed response from the previous window says nothing about the
+    // current one; adopting it would restore budget already spent.
+    const limiter = new RateLimiter({ sleep: instantSleep });
+    limiter.observe(
+      new Headers({ 'x-ratelimit-remaining': '5', 'x-ratelimit-reset': '1780000200' }),
+    );
+    limiter.observe(
+      new Headers({ 'x-ratelimit-remaining': '55', 'x-ratelimit-reset': '1780000100' }),
+    );
+
+    expect(limiter.snapshot.remaining).toBe(5);
+  });
+
   it('ignores a stale larger remaining count for the same window', () => {
     const limiter = new RateLimiter({ sleep: instantSleep });
     limiter.observe(new Headers({ 'x-ratelimit-remaining': '5', 'x-ratelimit-reset': '100' }));
@@ -494,5 +509,34 @@ describe('ForgeRateLimitError', () => {
 
     expect(rateLimited.isRetryable).toBe(true);
     expect(notFound.isRetryable).toBe(false);
+  });
+});
+
+describe('pollUntilAbsent', () => {
+  it('treats a 404 as successful deletion', async () => {
+    let calls = 0;
+    const result = await pollUntilAbsent(
+      async () => {
+        calls += 1;
+        await Promise.resolve();
+        if (calls >= 2) throw new ForgeApiError('gone', 404, 'GET', 'u', null);
+      },
+      { sleep: instantSleep },
+    );
+
+    expect(result.absent).toBe(true);
+    expect(result.attempts).toBe(2);
+  });
+
+  it('propagates errors that are not a 404', async () => {
+    await expect(
+      pollUntilAbsent(
+        async () => {
+          await Promise.resolve();
+          throw new ForgeApiError('boom', 500, 'GET', 'u', null);
+        },
+        { sleep: instantSleep },
+      ),
+    ).rejects.toThrow(ForgeApiError);
   });
 });

@@ -60,9 +60,19 @@ const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
   'organizations.servers.database.backups.destroy',
   'organizations.servers.database.backups.instances.destroy',
   'organizations.servers.database.backups.instances.restores.store',
-  // Teams and roles — account-level structural change.
+  // Teams, roles and access — account-level structural change. The acceptance
+  // criteria classify team mutation as destructive, so the whole surface lives
+  // here rather than being split across confirmation-gated entries.
+  'organizations.teams.store',
+  'organizations.teams.update',
   'organizations.teams.destroy',
+  'organizations.roles.store',
   'organizations.roles.destroy',
+  'organizations.teams.invites.store',
+  'organizations.teams.members.update',
+  'organizations.teams.servers.store',
+  'organizations.teams.server-credentials.store',
+  'organizations.teams.recipes.store',
   'organizations.teams.members.destroy',
   'organizations.teams.servers.destroy',
   'organizations.teams.server-credentials.destroy',
@@ -121,11 +131,16 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
   // destructive, but consequential enough to confirm.
   'organizations.servers.archives.destroy',
 
+  // Live nginx configuration. The API has no `nginx -t` equivalent, so a bad
+  // write returns 202 and can take the site down with no validation step and no
+  // documented way back short of restoring the previous content by hand.
+  'organizations.servers.sites.nginx.update',
+  'organizations.servers.sites.domains.nginx.update',
+  'organizations.servers.php.versions.configs.fpm.update',
+  'organizations.servers.php.versions.configs.pool.update',
+  'organizations.servers.php.versions.configs.cli.update',
+
   // Team and access mutation — changes who can reach the infrastructure.
-  'organizations.teams.invites.store',
-  'organizations.teams.members.update',
-  'organizations.teams.servers.store',
-  'organizations.teams.server-credentials.store',
   'organizations.teams.invites.destroy',
   'organizations.teams.recipes.destroy',
   'organizations.roles.update',
@@ -154,7 +169,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.recipes.destroy',
   'organizations.recipes.runs.store',
   'organizations.recipes.update',
-  'organizations.roles.store',
   'organizations.server-credentials.vpcs.store',
   'organizations.servers.background-processes.store',
   'organizations.servers.background-processes.update',
@@ -179,9 +193,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.max-upload-size.update',
   'organizations.servers.php.opcache.store',
   'organizations.servers.php.site-version.update',
-  'organizations.servers.php.versions.configs.cli.update',
-  'organizations.servers.php.versions.configs.fpm.update',
-  'organizations.servers.php.versions.configs.pool.update',
   'organizations.servers.php.versions.store',
   'organizations.servers.php.versions.update',
   'organizations.servers.scheduled-jobs.store',
@@ -197,7 +208,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.sites.deployments.status.destroy',
   'organizations.servers.sites.deployments.store',
   'organizations.servers.sites.domains.certificates.store',
-  'organizations.servers.sites.domains.nginx.update',
   'organizations.servers.sites.domains.store',
   'organizations.servers.sites.domains.update',
   'organizations.servers.sites.environment.update',
@@ -216,7 +226,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.sites.logs.application.destroy',
   'organizations.servers.sites.logs.nginx-access.destroy',
   'organizations.servers.sites.logs.nginx-error.destroy',
-  'organizations.servers.sites.nginx.update',
   'organizations.servers.sites.npm.credentials.destroy',
   'organizations.servers.sites.npm.credentials.store',
   'organizations.servers.sites.npm.credentials.update',
@@ -234,10 +243,47 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.update',
   'organizations.storage-providers.store',
   'organizations.storage-providers.update',
-  'organizations.teams.recipes.store',
-  'organizations.teams.store',
-  'organizations.teams.update',
 ]);
+
+/**
+ * Body fields that identify or change the target of a guarded operation.
+ *
+ * Path parameters alone are not enough. Several guarded operations select their
+ * target in the **request body**: `POST /orgs/{org}/servers/archives` carries
+ * the server in `ArchiveRequest`, and a backup restore carries the destination
+ * database. For those, a phrase built only from path ids is constant across
+ * targets, so one confirmation would authorise archiving any server simply by
+ * changing the body.
+ *
+ * Keyed by `operationId`; every listed field is appended to the confirmation
+ * phrase when present. Generation fails if a guarded operation has neither a
+ * non-organization path parameter nor an entry here, so a new body-selected
+ * destructive operation cannot ship with an unbound confirmation.
+ */
+const CONFIRMATION_TARGET_FIELDS: Record<string, readonly string[]> = {
+  // Target server lives in the body, not the path.
+  'organizations.servers.archives.store': ['server_id'],
+  // Restores overwrite a caller-selected database.
+  'organizations.servers.database.backups.instances.restores.store': ['database_id'],
+  // One route, two very different effects.
+  'organizations.servers.actions.store': ['action'],
+  'organizations.servers.services.nginx.actions.store': ['action'],
+  'organizations.servers.services.mysql.actions.store': ['action'],
+  'organizations.servers.services.postgres.actions.store': ['action'],
+  'organizations.servers.services.redis.actions.store': ['action'],
+  'organizations.servers.services.supervisor.actions.store': ['action'],
+  'organizations.servers.services.php.actions.store': ['action', 'version'],
+  'organizations.servers.background-processes.actions.store': ['action'],
+  'organizations.servers.sites.domains.actions.store': ['action'],
+  'organizations.servers.sites.domains.certificates.actions.store': ['action'],
+  // Team and access mutation identify the subject in the body.
+  'organizations.teams.store': ['name'],
+  'organizations.roles.store': ['name'],
+  'organizations.teams.invites.store': ['email'],
+  'organizations.teams.servers.store': ['server_id'],
+  'organizations.teams.server-credentials.store': ['credential_id'],
+  'organizations.teams.recipes.store': ['recipe_id'],
+};
 
 /**
  * Laravel resource-route suffix -> verb used in the generated tool name.
@@ -339,6 +385,7 @@ function main(): void {
   let confirmCount = 0;
   const unclassifiedMutations: string[] = [];
   const doubleClassified: string[] = [];
+  const unboundConfirmations: string[] = [];
 
   for (const [path, pathItem] of Object.entries(spec.paths)) {
     for (const method of HTTP_METHODS) {
@@ -393,6 +440,12 @@ function main(): void {
 
       const isDestructive = DESTRUCTIVE_OPERATION_IDS.has(operationId);
       const requiresConfirm = isDestructive || CONFIRM_REQUIRED_OPERATION_IDS.has(operationId);
+
+      if (requiresConfirm) {
+        const hasPathTarget = pathParams.some((param) => param.name !== 'organization');
+        const hasBodyTarget = (CONFIRMATION_TARGET_FIELDS[operationId] ?? []).length > 0;
+        if (!hasPathTarget && !hasBodyTarget) unboundConfirmations.push(operationId);
+      }
       if (isDestructive) destructiveCount += 1;
       if (requiresConfirm) confirmCount += 1;
 
@@ -431,6 +484,9 @@ function main(): void {
             bodySchemaInline === undefined ? 'undefined' : JSON.stringify(bodySchemaInline)
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
+          `    confirmationTargetFields: ${JSON.stringify(
+            CONFIRMATION_TARGET_FIELDS[operationId] ?? [],
+          )},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,
           '  },',
@@ -465,6 +521,20 @@ function main(): void {
         'infrastructure or data), CONFIRM_REQUIRED_OPERATION_IDS (can interrupt a live ' +
         'service), or REVIEWED_SAFE_MUTATION_OPERATION_IDS (recreatable, no interruption) ' +
         'in scripts/generate-operations.ts.',
+    );
+  }
+
+  // Every guarded operation must have something that binds the confirmation to
+  // a specific target: a path parameter other than the organization, or an
+  // explicit body-field entry. Otherwise the phrase is constant and one
+  // confirmation authorises every target.
+  if (unboundConfirmations.length > 0) {
+    throw new Error(
+      `${unboundConfirmations.length} guarded operation(s) have no target bound into the ` +
+        `confirmation phrase:\n` +
+        unboundConfirmations.map((id) => `  - ${id}`).join('\n') +
+        '\n\nAdd the identifying request-body field(s) to CONFIRMATION_TARGET_FIELDS in ' +
+        'scripts/generate-operations.ts.',
     );
   }
 

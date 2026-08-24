@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildInputSchema, cleanText, resolveSchema } from '../src/tools/schema.js';
+import { ArgumentValidator, ForgeValidationError } from '../src/tools/validate.js';
 import type { SchemaRegistry } from '../src/tools/schema.js';
 import { loadSpecSchemas } from './helpers.js';
 
@@ -208,5 +209,51 @@ describe('buildInputSchema', () => {
 
   it('forbids unknown properties', () => {
     expect(buildInputSchema(baseOptions)['additionalProperties']).toBe(false);
+  });
+});
+
+describe('ArgumentValidator', () => {
+  it('refuses to register a tool whose schema cannot be compiled', () => {
+    // Registering it anyway would leave that one tool with no argument
+    // validation at all — silently, which is the worst way to fail.
+    const validator = new ArgumentValidator();
+
+    // An unclosed character class is a compile-time failure in Ajv, unlike an
+    // unknown keyword which `strict: false` tolerates.
+    expect(() =>
+      validator.register('broken_tool', {
+        type: 'object',
+        properties: { x: { type: 'string', pattern: '[' } },
+      }),
+    ).toThrow(ForgeValidationError);
+  });
+
+  it('refuses to validate against a tool it never compiled', () => {
+    const validator = new ArgumentValidator();
+    expect(() => validator.assertValid('never_registered', {})).toThrow(ForgeValidationError);
+  });
+
+  it('rejects unknown properties and reports which one', () => {
+    const validator = new ArgumentValidator();
+    validator.register('demo', {
+      type: 'object',
+      properties: { known: { type: 'string' } },
+      additionalProperties: false,
+    });
+
+    expect(() => validator.assertValid('demo', { smuggled: 'x' })).toThrow(/smuggled/);
+  });
+
+  it('can excuse a named missing property so a better error can be raised', () => {
+    const validator = new ArgumentValidator();
+    validator.register('demo', {
+      type: 'object',
+      properties: { confirm: { type: 'string' } },
+      required: ['confirm'],
+      additionalProperties: false,
+    });
+
+    expect(() => validator.assertValid('demo', {}, ['confirm'])).not.toThrow();
+    expect(() => validator.assertValid('demo', {})).toThrow(/confirm/);
   });
 });

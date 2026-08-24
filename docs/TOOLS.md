@@ -6,8 +6,8 @@ Every tool below maps to exactly one operation in the [Laravel Forge API](https:
 
 - **273** tools total
 - **105** are asynchronous and accept `wait: true` to poll until the operation settles
-- **17** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
-- **52** require a matching `confirm` argument
+- **25** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
+- **61** require a matching `confirm` argument
 
 ## Argument conventions
 
@@ -37,17 +37,25 @@ These are hidden unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`, and always require `con
 | `delete_servers_database_schemas` | `DELETE /orgs/{organization}/servers/{server}/database/schemas/{database}` |
 | `delete_servers_database_users` | `DELETE /orgs/{organization}/servers/{server}/database/users/{databaseUser}` |
 | `delete_servers_sites_deploy_key` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deploy-key` |
+| `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` |
+| `create_roles` | `POST /orgs/{organization}/roles` |
 | `delete_roles` | `DELETE /orgs/{organization}/roles/{role}` |
 | `delete_servers_ssh_keys` | `DELETE /orgs/{organization}/servers/{server}/ssh-keys/{key}` |
+| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` |
 | `delete_teams_server_credentials` | `DELETE /orgs/{organization}/teams/{team}/server-credentials/{credential}` |
 | `create_servers_archives` | `POST /orgs/{organization}/servers/archives` |
 | `delete_servers` | `DELETE /orgs/{organization}/servers/{server}` |
 | `delete_servers_php_versions` | `DELETE /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` |
+| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` |
 | `delete_teams_servers` | `DELETE /orgs/{organization}/teams/{team}/servers/{server}` |
 | `delete_servers_sites` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}` |
 | `delete_storage_providers` | `DELETE /orgs/{organization}/storage-providers/{storageConfiguration}` |
+| `create_teams` | `POST /orgs/{organization}/teams` |
+| `update_teams` | `PUT /orgs/{organization}/teams/{team}` |
 | `delete_teams` | `DELETE /orgs/{organization}/teams/{team}` |
+| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` |
 | `delete_teams_members` | `DELETE /orgs/{organization}/teams/{team}/members/{user}` |
+| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` |
 
 ## Confirmation-gated tools
 
@@ -72,7 +80,6 @@ counterpart in the API, so a mistake is not trivially reversible.
 | `delete_servers_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` |
 | `delete_servers_sites_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` |
 | `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` |
-| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` |
 | `delete_servers_archives` | `DELETE /orgs/{organization}/servers/archives/{server}` |
 | `create_servers_background_processes_actions` | `POST /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/actions` |
 | `create_servers_actions` | `POST /orgs/{organization}/servers/{server}/actions` |
@@ -82,14 +89,16 @@ counterpart in the API, so a mistake is not trivially reversible.
 | `create_servers_services_mysql_actions` | `POST /orgs/{organization}/servers/{server}/services/mysql/actions` |
 | `create_servers_services_php_actions` | `POST /orgs/{organization}/servers/{server}/services/php/actions` |
 | `create_servers_services_supervisor_actions` | `POST /orgs/{organization}/servers/{server}/services/supervisor/actions` |
+| `update_servers_php_versions_configs_fpm` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` |
+| `update_servers_php_versions_configs_cli` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/cli` |
+| `update_servers_php_versions_configs_pool` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/pool` |
 | `delete_servers_php_opcache` | `DELETE /orgs/{organization}/servers/{server}/php/opcache` |
-| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` |
 | `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` |
 | `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` |
+| `update_servers_sites_domains_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` |
 | `delete_servers_sites_domains_certificates` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` |
 | `create_servers_sites_domains_certificates_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}/actions` |
-| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` |
-| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` |
+| `update_servers_sites_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/nginx` |
 | `delete_teams_invites` | `DELETE /orgs/{organization}/teams/{team}/invites/{invitation}` |
 
 ## All tools by resource
@@ -292,7 +301,7 @@ Forge documentation: https://forge.laravel.com/docs/recipes
 | `create_recipes_runs` | `POST /orgs/{organization}/recipes/{recipe}/runs` | Create recipe run | async |
 | `get_recipes_runs` | `GET /orgs/{organization}/recipes/{recipe}/runs/{log}` | Get recipe run | — |
 | `list_teams_recipes` | `GET /orgs/{organization}/teams/{team}/recipes` | List team recipes | — |
-| `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` | Share recipe with the team | — |
+| `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` | Share recipe with the team | **destructive** |
 | `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` | Delete a recipe share | **confirm** |
 | `list_forge_recipes` | `GET /forge-recipes` | List Forge's recipes | — |
 | `get_forge_recipes` | `GET /forge-recipes/{forgeRecipe}` | Get Forge recipe | — |
@@ -318,7 +327,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | `list_permissions` | `GET /permissions` | List permissions | — |
 | `get_permissions` | `GET /permissions/{permission}` | Get permission | — |
 | `list_roles` | `GET /orgs/{organization}/roles` | List roles | — |
-| `create_roles` | `POST /orgs/{organization}/roles` | Create role | — |
+| `create_roles` | `POST /orgs/{organization}/roles` | Create role | **destructive** |
 | `get_roles` | `GET /orgs/{organization}/roles/{role}` | Get role | — |
 | `update_roles` | `PUT /orgs/{organization}/roles/{role}` | Update role | **confirm** |
 | `delete_roles` | `DELETE /orgs/{organization}/roles/{role}` | Delete role | **destructive** |
@@ -371,7 +380,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_teams_server_credentials` | `GET /orgs/{organization}/teams/{team}/server-credentials` | List team server credentials | — |
-| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` | Create a new server credential share | **confirm** |
+| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` | Create a new server credential share | **destructive** |
 | `delete_teams_server_credentials` | `DELETE /orgs/{organization}/teams/{team}/server-credentials/{credential}` | Delete a server credential share | **destructive** |
 
 ### Servers
@@ -411,11 +420,11 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `update_servers_php_versions` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Update installed PHP version | async |
 | `delete_servers_php_versions` | `DELETE /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Delete installed PHP version | **destructive**, async |
 | `get_servers_php_versions_configs_fpm` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` | Get PHP version FPM config | — |
-| `update_servers_php_versions_configs_fpm` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` | Update PHP version FPM config | async |
+| `update_servers_php_versions_configs_fpm` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` | Update PHP version FPM config | **confirm**, async |
 | `get_servers_php_versions_configs_cli` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/cli` | Get PHP version CLI config | — |
-| `update_servers_php_versions_configs_cli` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/cli` | Update PHP version CLI config | async |
+| `update_servers_php_versions_configs_cli` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/cli` | Update PHP version CLI config | **confirm**, async |
 | `get_servers_php_versions_configs_pool` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/pool` | Get PHP version pool config | — |
-| `update_servers_php_versions_configs_pool` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/pool` | Update PHP version pool config | async |
+| `update_servers_php_versions_configs_pool` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/pool` | Update PHP version pool config | **confirm**, async |
 | `get_servers_php_max_upload_size` | `GET /orgs/{organization}/servers/{server}/php/max-upload-size` | Get server PHP max upload size | — |
 | `update_servers_php_max_upload_size` | `PUT /orgs/{organization}/servers/{server}/php/max-upload-size` | Update server PHP max upload size | async |
 | `get_servers_php_max_execution_time` | `GET /orgs/{organization}/servers/{server}/php/max-execution-time` | Get server PHP max execution time | — |
@@ -424,7 +433,7 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `create_servers_php_opcache` | `POST /orgs/{organization}/servers/{server}/php/opcache` | Create PHP OPcache config | async |
 | `delete_servers_php_opcache` | `DELETE /orgs/{organization}/servers/{server}/php/opcache` | Delete PHP OPcache config | **confirm**, async |
 | `list_teams_servers` | `GET /orgs/{organization}/teams/{team}/servers` | List team servers | — |
-| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` | Create a new server share | **confirm** |
+| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` | Create a new server share | **destructive** |
 | `delete_teams_servers` | `DELETE /orgs/{organization}/teams/{team}/servers/{server}` | Delete a server share | **destructive** |
 
 ### Sites
@@ -450,7 +459,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `servers_sites_domains_configurations` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/configurations` | Get domain DNS configuration | — |
 | `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` | Create domain action | **confirm**, async |
 | `get_servers_sites_domains_nginx` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Get domain Nginx configuration | — |
-| `update_servers_sites_domains_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Update domain Nginx configuration | async |
+| `update_servers_sites_domains_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Update domain Nginx configuration | **confirm**, async |
 | `get_servers_sites_domains_certificate` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificate` | Get active domain certificate | — |
 | `list_servers_sites_domains_certificates` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates` | List domain certificates | — |
 | `create_servers_sites_domains_certificates` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates` | Create domain certificate | async |
@@ -463,7 +472,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `get_servers_sites_environment` | `GET /orgs/{organization}/servers/{server}/sites/{site}/environment` | Get .env content | — |
 | `update_servers_sites_environment` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/environment` | Update .env content | async |
 | `get_servers_sites_nginx` | `GET /orgs/{organization}/servers/{server}/sites/{site}/nginx` | Get Nginx configuration | — |
-| `update_servers_sites_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/nginx` | Update Nginx configuration | async |
+| `update_servers_sites_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/nginx` | Update Nginx configuration | **confirm**, async |
 | `list_servers_sites_composer_credentials` | `GET /orgs/{organization}/servers/{server}/sites/{site}/composer/credentials` | Get composer credentials for the site | — |
 | `create_servers_sites_composer_credentials` | `POST /orgs/{organization}/servers/{server}/sites/{site}/composer/credentials` | Create composer credentials for the site | async |
 | `get_servers_sites_composer_credentials` | `GET /orgs/{organization}/servers/{server}/sites/{site}/composer/credentials/{repository}` | Get composer credential for the site | — |
@@ -507,16 +516,16 @@ Forge documentation: https://forge.laravel.com/docs/teams
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_teams` | `GET /orgs/{organization}/teams` | List teams | — |
-| `create_teams` | `POST /orgs/{organization}/teams` | Create team | — |
+| `create_teams` | `POST /orgs/{organization}/teams` | Create team | **destructive** |
 | `get_teams` | `GET /orgs/{organization}/teams/{team}` | Get team | — |
-| `update_teams` | `PUT /orgs/{organization}/teams/{team}` | Update team | — |
+| `update_teams` | `PUT /orgs/{organization}/teams/{team}` | Update team | **destructive** |
 | `delete_teams` | `DELETE /orgs/{organization}/teams/{team}` | Delete team | **destructive** |
 | `list_teams_members` | `GET /orgs/{organization}/teams/{team}/members` | List team members | — |
 | `get_teams_members` | `GET /orgs/{organization}/teams/{team}/members/{user}` | Get team member | — |
-| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` | Update team member | **confirm** |
+| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` | Update team member | **destructive** |
 | `delete_teams_members` | `DELETE /orgs/{organization}/teams/{team}/members/{user}` | Delete team member | **destructive** |
 | `list_teams_invites` | `GET /orgs/{organization}/teams/{team}/invites` | List team invitations | — |
-| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` | Create team invite | **confirm**, async |
+| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` | Create team invite | **destructive**, async |
 | `get_teams_invites` | `GET /orgs/{organization}/teams/{team}/invites/{invitation}` | Get team invitation | — |
 | `delete_teams_invites` | `DELETE /orgs/{organization}/teams/{team}/invites/{invitation}` | Delete team invitation | **confirm** |
 

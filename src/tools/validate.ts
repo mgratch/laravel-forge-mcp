@@ -109,23 +109,22 @@ export class ArgumentValidator {
   /**
    * Compiles and caches the validator for one tool.
    *
-   * A schema Ajv cannot compile is recorded as "no validator" rather than
-   * throwing at startup: refusing to serve an otherwise working tool because of
-   * an unusual schema would be a worse outcome than validating it loosely. The
-   * failure is surfaced to the caller so it can be logged.
+   * Compilation failure is fatal by design. Registering a tool whose schema
+   * could not be compiled would leave it with no argument validation at all,
+   * reopening exactly the smuggling path this layer exists to close — and it
+   * would do so silently, for one tool, which is the worst way to fail.
+   *
+   * @throws {ForgeValidationError} when the schema cannot be compiled.
    */
-  public register(
-    toolName: string,
-    schema: JsonSchema,
-  ): { readonly compiled: boolean; readonly error?: string } {
+  public register(toolName: string, schema: JsonSchema): void {
     try {
       this.validators.set(toolName, this.ajv.compile(schema));
-      return { compiled: true };
     } catch (error) {
-      return {
-        compiled: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      throw new ForgeValidationError(toolName, [
+        `input schema could not be compiled: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ]);
     }
   }
 
@@ -143,7 +142,14 @@ export class ArgumentValidator {
     ignoreMissing: readonly string[] = [],
   ): void {
     const validate = this.validators.get(toolName);
-    if (!validate) return;
+    if (!validate) {
+      // Unreachable via buildToolRegistry, which registers every tool before
+      // serving it. Treated as a failure rather than a pass so that a future
+      // refactor cannot quietly skip validation.
+      throw new ForgeValidationError(toolName, [
+        'no compiled validator is registered for this tool',
+      ]);
+    }
 
     if (validate(args)) return;
 

@@ -83,6 +83,12 @@ and issues no request.
    `POST /orgs/{org}/servers/{server}/…`, and one route serves both "reboot
    nginx" and "stop nginx".
 
+   Targets carried in the **request body** are bound too. Archiving a server
+   takes `server_id` in the body rather than the path, so its phrase is
+   `create_servers_archives server_id=12345` — without that, one confirmation
+   would archive any server. Generation refuses to run if a guarded operation
+   has no target bound into its phrase.
+
    A generic `"yes"` is refused, and so is a phrase naming a different server — so a model cannot
    satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.
    The request is never sent if the phrase does not match.

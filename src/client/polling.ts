@@ -142,3 +142,48 @@ export async function pollUntilTerminal<T>(
 
 /** Exposed so callers can surface the last value after a timeout, if they hold one. */
 export type { ForgePollTimeoutError };
+
+/** Outcome of waiting for a resource to disappear. */
+export interface AbsenceResult {
+  readonly absent: boolean;
+  readonly attempts: number;
+}
+
+/**
+ * Polls until a read fails with 404, which is how a deletion reports success.
+ *
+ * Treating that 404 as an error — as a status-based poll would — turns a
+ * successful delete into a spurious failure.
+ */
+export async function pollUntilAbsent(
+  read: () => Promise<void>,
+  options: PollOptions = {},
+): Promise<AbsenceResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? Date.now;
+
+  const startedAt = now();
+  let interval = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
+  let attempts = 0;
+
+  for (;;) {
+    attempts += 1;
+
+    try {
+      await read();
+    } catch (error) {
+      // 404 means the resource is gone: the deletion completed.
+      if (typeof error === 'object' && error !== null && 'status' in error) {
+        if (error.status === 404) return { absent: true, attempts };
+      }
+      throw error;
+    }
+
+    const elapsed = now() - startedAt;
+    if (elapsed + interval >= timeoutMs) return { absent: false, attempts };
+
+    await sleep(interval);
+    interval = Math.min(interval * 2, options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS);
+  }
+}

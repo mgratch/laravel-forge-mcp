@@ -10,7 +10,7 @@
 import type { ForgeClient } from '../client/http.js';
 import { ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
-import { pollUntilTerminal } from '../client/polling.js';
+import { pollUntilAbsent, pollUntilTerminal } from '../client/polling.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor } from './types.js';
 import { ArgumentValidator } from './validate.js';
@@ -76,16 +76,6 @@ export interface RegistryOptions {
 const ORGANIZATION_PARAM = 'organization';
 
 /**
- * Body fields that change *what a guarded operation does*, not merely its
- * inputs, and therefore belong in the confirmation phrase.
- *
- * `action` is the clearest case: one route serves both "reboot nginx" and "stop
- * nginx", so a phrase omitting it lets a confirmation for the recoverable
- * variant authorise the one with no documented way back.
- */
-const EFFECT_FIELDS = ['action', 'preserve_at_provider', 'version'] as const;
-
-/**
  * Builds the confirmation phrase a guarded tool demands.
  *
  * The phrase must identify the operation **and** everything about its effect
@@ -118,11 +108,16 @@ export function buildConfirmationPhrase(
     })
     .filter((part): part is string => part !== undefined);
 
-  const effects = EFFECT_FIELDS.map((field) => {
-    const value = args[field];
-    if (value === undefined || value === null) return undefined;
-    return `${field}=${stringifyParam(field, value)}`;
-  }).filter((part): part is string => part !== undefined);
+  // Body-selected targets and effect-changing fields, declared per operation by
+  // the generator. Without these, archiving a server — whose target is in the
+  // body, not the path — would have the same phrase for every server.
+  const effects = descriptor.confirmationTargetFields
+    .map((field) => {
+      const value = args[field];
+      if (value === undefined || value === null) return undefined;
+      return `${field}=${stringifyParam(field, value)}`;
+    })
+    .filter((part): part is string => part !== undefined);
 
   const parts = [descriptor.name, ...identifiers, ...effects];
   return parts.join(' ');
@@ -183,10 +178,10 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
       ...(descriptor.requiresConfirm
         ? {
             confirmDescription:
-              'Confirmation phrase. Must exactly equal "<METHOD> <param>=<value> ..." naming ' +
-              'this operation and its target — for example "DELETE server=12345". The tool ' +
-              'refuses to run without it. Call the matching read tool first if you are unsure ' +
-              'of the target.',
+              `Confirmation phrase. Must exactly equal "${descriptor.name} <field>=<value> ..." ` +
+              `— the tool name, then this operation's target identifiers in the order they are ` +
+              `declared. Example: "${buildExampleConfirmation(descriptor, defaultOrganization !== undefined)}". ` +
+              'The tool refuses to run and issues no request without an exact match.',
           }
         : {}),
       supportsWait,
@@ -209,30 +204,68 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
 }
 
 /**
- * Whether an asynchronous operation has a completion state worth polling.
+ * How an asynchronous operation can be observed to completion.
  *
- * Polling only means something when there is a resource to re-read that reports
- * a status. Three shapes have none, and offering `wait` for them would be a lie:
+ * Polling means different things by shape, and pretending otherwise produces a
+ * `wait` that silently returns instantly or errors:
  *
- *  - **Creates** answer on a collection URL. Re-reading it returns a list, which
- *    has no status and would be treated as instantly terminal. The created
- *    resource's own URL is only knowable from the response, so `wait` is offered
- *    only when the API returns a `self` link, checked at call time.
- *  - **Action routes** (`.../actions`) accept POST but have no GET, so there is
- *    nothing to poll.
- *  - **Deletions** complete by the resource ceasing to exist. That is handled
- *    explicitly rather than by polling for a status that will never appear.
- *
- * Updates to an addressable resource — the common case, such as writing an
- * nginx config — are the shape where polling genuinely works.
+ *  - `resource` — PUT/PATCH address the resource they change, so the same URL
+ *    can be re-read until its status settles.
+ *  - `created`  — POST answers on a collection URL, which has no status. The
+ *    created resource is only addressable via the `self` link in the response,
+ *    so this strategy waits only when the API supplies one.
+ *  - `absent`   — DELETE completes when the resource stops existing, so a 404
+ *    is success rather than an error.
+ *  - `none`     — action routes accept POST but expose no GET. Nothing can be
+ *    polled, so `wait` is not advertised at all.
  */
-function supportsPolling(descriptor: OperationDescriptor): boolean {
-  if (descriptor.processingMode !== 'async') return false;
-  if (descriptor.path.endsWith('/actions')) return false;
+type PollStrategy = 'resource' | 'created' | 'absent' | 'none';
 
-  // A PUT/PATCH addresses the resource it modifies, so the same URL can be read
-  // back. DELETE is handled by absence, and POST is handled via the self link.
-  return descriptor.method === 'PUT' || descriptor.method === 'PATCH';
+function pollStrategyFor(descriptor: OperationDescriptor): PollStrategy {
+  if (descriptor.processingMode !== 'async') return 'none';
+  if (descriptor.path.endsWith('/actions')) return 'none';
+
+  switch (descriptor.method) {
+    case 'PUT':
+    case 'PATCH':
+      return 'resource';
+    case 'POST':
+      return 'created';
+    case 'DELETE':
+      return 'absent';
+    default:
+      return 'none';
+  }
+}
+
+/** Whether `wait` should be advertised for this operation. */
+function supportsPolling(descriptor: OperationDescriptor): boolean {
+  return pollStrategyFor(descriptor) !== 'none';
+}
+
+/**
+ * Renders a worked example of the confirmation phrase for a tool's description.
+ *
+ * Generated from the same fields the runtime uses, so the documented format
+ * cannot drift from the enforced one — the previous hard-coded example
+ * guaranteed a failed first attempt for any agent that followed it.
+ */
+function buildExampleConfirmation(
+  descriptor: OperationDescriptor,
+  organizationPinned: boolean,
+): string {
+  const parts = [descriptor.name];
+
+  for (const param of descriptor.pathParams) {
+    if (param.name === ORGANIZATION_PARAM && organizationPinned) continue;
+    parts.push(`${param.name}=<${param.name}>`);
+  }
+
+  for (const field of descriptor.confirmationTargetFields) {
+    parts.push(`${field}=<${field}>`);
+  }
+
+  return parts.join(' ');
 }
 
 /** Composes the description a model reads before choosing a tool. */
@@ -241,8 +274,12 @@ function buildDescription(descriptor: OperationDescriptor): string {
 
   if (descriptor.processingMode === 'async') {
     parts.push(
-      'This operation is asynchronous: Forge returns 202 Accepted and completes in the ' +
-        'background. Pass wait: true to poll until it settles.',
+      supportsPolling(descriptor)
+        ? 'This operation is asynchronous: Forge returns 202 Accepted and completes in the ' +
+            'background. Pass wait: true to poll until it settles.'
+        : 'This operation is asynchronous: Forge returns 202 Accepted and completes in the ' +
+            'background. It exposes no route to poll, so re-read the affected resource to ' +
+            'observe the result.',
     );
   }
 
@@ -345,10 +382,37 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     };
   }
 
-  // Poll the resource's own URL. `self` from the response is authoritative;
-  // for a PUT/PATCH the request path already addresses the resource, so it is a
-  // sound fallback.
+  const strategy = pollStrategyFor(descriptor);
   const selfLink = extractSelfLink(response.data);
+
+  // A deletion is complete when the resource is gone, so 404 is the success
+  // signal rather than an error.
+  if (strategy === 'absent') {
+    const gone = await pollUntilAbsent(async () => {
+      await client.request({ method: 'GET', path, query: {} });
+    });
+
+    return {
+      status: response.status,
+      accepted: response.accepted,
+      data: response.data,
+      polled: { status: gone.absent ? 'deleted' : 'still-present', attempts: gone.attempts },
+    };
+  }
+
+  // A create is only addressable through the link the API returned; without one
+  // there is nothing to poll, so say so rather than polling the collection.
+  if (strategy === 'created' && selfLink === undefined) {
+    return {
+      status: response.status,
+      accepted: response.accepted,
+      data: response.data,
+      note:
+        'Forge accepted the request but returned no self link, so the new resource could not ' +
+        'be polled. List the collection to observe it.',
+    };
+  }
+
   const pollPath = selfLink ?? path;
 
   const polled = await pollUntilTerminal(async () => {

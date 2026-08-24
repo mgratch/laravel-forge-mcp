@@ -65,6 +65,15 @@ export interface OperationDescriptor {
   readonly bodySchemaInline: Readonly<Record<string, unknown>> | undefined;
   readonly bodyRequired: boolean;
   /**
+   * Request-body fields that identify or change this operation's target.
+   *
+   * Appended to the confirmation phrase. Needed because several guarded
+   * operations select their target in the body rather than the path — archiving
+   * a server and restoring a backup among them — so a phrase built from path
+   * ids alone would be identical for every target.
+   */
+  readonly confirmationTargetFields: readonly string[];
+  /**
    * Destroys infrastructure or irreversibly removes data. Registered only when
    * `FORGE_MCP_ALLOW_DESTRUCTIVE=1`.
    */
