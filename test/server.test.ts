@@ -1,0 +1,119 @@
+import { describe, expect, it } from 'vitest';
+
+import { ForgeConfigurationError } from '../src/client/errors.js';
+import { ForgeClient } from '../src/client/http.js';
+import { RateLimiter } from '../src/client/rate-limit.js';
+import { loadConfig } from '../src/config.js';
+import { OPERATIONS } from '../src/generated/operations.js';
+import { createServer } from '../src/server.js';
+import { instantSleep, loadSpecSchemas, stubFetch } from './helpers.js';
+
+const schemas = loadSpecSchemas();
+
+describe('loadConfig', () => {
+  it('requires an API token', () => {
+    expect(() => loadConfig({})).toThrow(ForgeConfigurationError);
+    expect(() => loadConfig({ FORGE_API_KEY: '  ' })).toThrow(ForgeConfigurationError);
+  });
+
+  it('points the operator at the token page', () => {
+    expect(() => loadConfig({})).toThrow(/forge\.laravel\.com\/profile\/api/);
+  });
+
+  it('reads the happy path', () => {
+    const config = loadConfig({
+      FORGE_API_KEY: 'token',
+      FORGE_ORGANIZATION: 'acme',
+      FORGE_MCP_ALLOW_DESTRUCTIVE: '1',
+    });
+
+    expect(config).toMatchObject({
+      apiKey: 'token',
+      organization: 'acme',
+      allowDestructive: true,
+    });
+  });
+
+  it('defaults destructive operations to disabled', () => {
+    expect(loadConfig({ FORGE_API_KEY: 'token' }).allowDestructive).toBe(false);
+  });
+
+  it('accepts the usual truthy spellings', () => {
+    for (const value of ['1', 'true', 'TRUE', 'yes', 'on']) {
+      expect(
+        loadConfig({ FORGE_API_KEY: 't', FORGE_MCP_ALLOW_DESTRUCTIVE: value }).allowDestructive,
+      ).toBe(true);
+    }
+    for (const value of ['0', 'false', 'no', '', 'maybe']) {
+      expect(
+        loadConfig({ FORGE_API_KEY: 't', FORGE_MCP_ALLOW_DESTRUCTIVE: value }).allowDestructive,
+      ).toBe(false);
+    }
+  });
+
+  it('treats a blank organization as unset', () => {
+    expect(
+      loadConfig({ FORGE_API_KEY: 't', FORGE_ORGANIZATION: '   ' }).organization,
+    ).toBeUndefined();
+  });
+
+  it('falls back to the documented base URL', () => {
+    expect(loadConfig({ FORGE_API_KEY: 't' }).baseUrl).toBe('https://forge.laravel.com/api');
+  });
+
+  it('rejects a non-positive timeout', () => {
+    expect(() => loadConfig({ FORGE_API_KEY: 't', FORGE_TIMEOUT_MS: '0' })).toThrow(
+      ForgeConfigurationError,
+    );
+    expect(() => loadConfig({ FORGE_API_KEY: 't', FORGE_MAX_RETRIES: 'abc' })).toThrow(
+      ForgeConfigurationError,
+    );
+  });
+});
+
+describe('createServer', () => {
+  function build(
+    overrides: Partial<ReturnType<typeof loadConfig>> = {},
+  ): ReturnType<typeof createServer> & { stub: ReturnType<typeof stubFetch> } {
+    const stub = stubFetch([]);
+    const client = new ForgeClient({
+      apiKey: 'token',
+      fetch: stub.fetch,
+      sleep: instantSleep,
+      rateLimiter: new RateLimiter({ sleep: instantSleep }),
+    });
+
+    const config = {
+      ...loadConfig({ FORGE_API_KEY: 'token', FORGE_ORGANIZATION: 'acme' }),
+      ...overrides,
+    };
+
+    return { ...createServer({ config, schemas, client }), stub };
+  }
+
+  it('registers the non-destructive surface by default', () => {
+    const { tools } = build();
+
+    const destructiveTotal = OPERATIONS.filter((op) => op.destructive).length;
+    expect(tools).toHaveLength(OPERATIONS.length - destructiveTotal);
+    expect(destructiveTotal).toBeGreaterThan(0);
+  });
+
+  it('registers everything when destructive operations are enabled', () => {
+    const { tools } = build({ allowDestructive: true });
+    expect(tools).toHaveLength(OPERATIONS.length);
+  });
+
+  it('annotates read-only tools', () => {
+    const { tools } = build();
+    const readTool = tools.find((tool) => tool.descriptor.method === 'GET');
+    expect(readTool).toBeDefined();
+  });
+
+  it('exposes the whole documented API surface', () => {
+    const { tools } = build({ allowDestructive: true });
+
+    // The Forge OpenAPI document declares 273 operations; every one is a tool.
+    expect(tools).toHaveLength(273);
+  });
+});
