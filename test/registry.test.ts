@@ -100,19 +100,45 @@ describe('confirmation guard', () => {
     const descriptor = OPERATIONS.find((op) => op.name === deleteServer);
     expect(descriptor).toBeDefined();
 
-    const phrase = buildConfirmationPhrase(descriptor as OperationDescriptor, {
-      organization: 'acme',
-      server: 12345,
-    });
+    const phrase = buildConfirmationPhrase(
+      descriptor as OperationDescriptor,
+      { organization: 'acme', server: 12345 },
+      true,
+    );
 
     expect(phrase).toBe('DELETE server=12345');
   });
 
-  it('excludes the organization from the phrase', () => {
+  it('excludes the organization from the phrase when the operator pinned one', () => {
     const descriptor = OPERATIONS.find((op) => op.name === deleteServer) as OperationDescriptor;
-    const phrase = buildConfirmationPhrase(descriptor, { organization: 'acme', server: 1 });
+    const phrase = buildConfirmationPhrase(descriptor, { organization: 'acme', server: 1 }, true);
 
     expect(phrase).not.toContain('organization');
+  });
+
+  it('includes the organization when the model supplies it', () => {
+    const descriptor = OPERATIONS.find((op) => op.name === deleteServer) as OperationDescriptor;
+    const phrase = buildConfirmationPhrase(descriptor, { organization: 'acme', server: 1 }, false);
+
+    expect(phrase).toBe('DELETE organization=acme server=1');
+  });
+
+  it('will not let a confirmation for one organization authorise another', async () => {
+    // Forge ids are scoped per organization, so server 12345 can exist in two
+    // of them. Without the org in the phrase, one confirmation would authorise
+    // a deletion in either.
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { allowDestructive: true, only: [deleteServer] });
+    const tool = findTool(tools, deleteServer);
+
+    await expect(
+      tool.handler({
+        organization: 'other-corp',
+        server: 12345,
+        confirm: 'DELETE organization=acme server=12345',
+      }),
+    ).rejects.toThrow(ForgeConfirmationError);
+    expect(stub.requests).toHaveLength(0);
   });
 
   it('refuses to run without a confirm value', async () => {
@@ -152,7 +178,11 @@ describe('confirmation guard', () => {
     const tools = makeRegistry(stub, { allowDestructive: true, only: [deleteServer] });
     const tool = findTool(tools, deleteServer);
 
-    await tool.handler({ organization: 'acme', server: 12345, confirm: 'DELETE server=12345' });
+    await tool.handler({
+      organization: 'acme',
+      server: 12345,
+      confirm: 'DELETE organization=acme server=12345',
+    });
 
     expect(stub.requests).toHaveLength(1);
     expect(stub.requests[0]?.method).toBe('DELETE');

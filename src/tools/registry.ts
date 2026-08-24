@@ -67,13 +67,24 @@ const ORGANIZATION_PARAM = 'organization';
  * The phrase names the operation and its target, so a model cannot satisfy the
  * guard with a generic "yes" and cannot confirm one resource while acting on
  * another.
+ *
+ * The organization is part of the target identity **unless the operator pinned
+ * one**. Forge resource ids are scoped per organization, so with no pinned org
+ * a phrase like "DELETE server=12345" would otherwise authorise deleting server
+ * 12345 in *any* organization the token can reach — the model could confirm
+ * against one org and the call could execute against another. When
+ * `FORGE_ORGANIZATION` is set the value is server-controlled and constant, so
+ * omitting it is safe and keeps the phrase short.
+ *
+ * @param organizationPinned Whether the server injects the organization itself.
  */
 export function buildConfirmationPhrase(
   descriptor: OperationDescriptor,
   args: Record<string, unknown>,
+  organizationPinned = false,
 ): string {
   const identifiers = descriptor.pathParams
-    .filter((param) => param.name !== ORGANIZATION_PARAM)
+    .filter((param) => !(param.name === ORGANIZATION_PARAM && organizationPinned))
     .map((param) => {
       const value = args[param.name];
       return value === undefined ? undefined : `${param.name}=${stringifyParam(param.name, value)}`;
@@ -204,7 +215,11 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
   }
 
   if (descriptor.requiresConfirm) {
-    const expected = buildConfirmationPhrase(descriptor, resolvedArgs);
+    const expected = buildConfirmationPhrase(
+      descriptor,
+      resolvedArgs,
+      defaultOrganization !== undefined,
+    );
     const received = resolvedArgs['confirm'];
     const receivedString = typeof received === 'string' ? received : undefined;
 
@@ -296,7 +311,15 @@ function extractBody(
   for (const [key, value] of Object.entries(args)) {
     if (reserved.has(key)) continue;
     if (value === undefined) continue;
-    body[key] = value;
+    // Assigning "__proto__" through bracket notation mutates the object's
+    // prototype rather than adding a field. No Forge schema uses these names.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    Object.defineProperty(body, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
 
   if (Object.keys(body).length === 0) {

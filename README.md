@@ -78,6 +78,10 @@ rather than a disclaimer.
    satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.
    The request is never sent if the phrase does not match.
 
+   When `FORGE_ORGANIZATION` is **not** pinned the phrase also carries the organization
+   (`"DELETE organization=acme server=12345"`), because Forge ids are scoped per organization and a
+   phrase without it would authorise the same id in any organization the token can reach.
+
 **Confirmation also covers non-deletions that can take a site down.** Service actions are the
 clearest case: the API exposes `stop` for nginx but has no `start`, so a careless stop has no
 documented way back.
