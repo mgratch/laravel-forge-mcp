@@ -9,9 +9,11 @@
 
 import type { ForgeClient } from '../client/http.js';
 import { ForgeConfirmationError } from '../client/errors.js';
+import { extractSelfLink } from '../client/jsonapi.js';
 import { pollUntilTerminal } from '../client/polling.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor } from './types.js';
+import { ArgumentValidator } from './validate.js';
 
 /**
  * Renders a path or query value as a string.
@@ -21,6 +23,16 @@ import type { OperationDescriptor } from './types.js';
  * would produce a confusing 404 instead of a clear message.
  */
 function stringifyParam(name: string, value: unknown): string {
+  // `sort` and `include` are declared as arrays in the OpenAPI document and are
+  // serialised comma-separated (OpenAPI `style: form`, `explode: false`), which
+  // is what Forge's filtering and relationship docs describe.
+  //
+  // @see https://forge.laravel.com/docs/api-reference/filtering
+  // @see https://forge.laravel.com/docs/api-reference/relationships
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => stringifyParam(`${name}[${index}]`, entry)).join(',');
+  }
+
   switch (typeof value) {
     case 'string':
       return value;
@@ -31,7 +43,7 @@ function stringifyParam(name: string, value: unknown): string {
       return value.toString();
     default:
       throw new TypeError(
-        `Parameter "${name}" must be a string, number or boolean, received ${
+        `Parameter "${name}" must be a string, number, boolean or an array of those, received ${
           value === null ? 'null' : typeof value
         }.`,
       );
@@ -56,25 +68,40 @@ export interface RegistryOptions {
   readonly defaultOrganization: string | undefined;
   /** When false, destructive operations are not registered at all. */
   readonly allowDestructive: boolean;
+  /** Injectable validator, for tests. */
+  readonly validator?: ArgumentValidator;
 }
 
 /** Path parameter carrying the organization slug throughout the API. */
 const ORGANIZATION_PARAM = 'organization';
 
 /**
+ * Body fields that change *what a guarded operation does*, not merely its
+ * inputs, and therefore belong in the confirmation phrase.
+ *
+ * `action` is the clearest case: one route serves both "reboot nginx" and "stop
+ * nginx", so a phrase omitting it lets a confirmation for the recoverable
+ * variant authorise the one with no documented way back.
+ */
+const EFFECT_FIELDS = ['action', 'preserve_at_provider', 'version'] as const;
+
+/**
  * Builds the confirmation phrase a guarded tool demands.
  *
- * The phrase names the operation and its target, so a model cannot satisfy the
- * guard with a generic "yes" and cannot confirm one resource while acting on
- * another.
+ * The phrase must identify the operation **and** everything about its effect
+ * that the caller could vary, so that a confirmation cannot be replayed against
+ * a different call. Three things go into it:
  *
- * The organization is part of the target identity **unless the operator pinned
- * one**. Forge resource ids are scoped per organization, so with no pinned org
- * a phrase like "DELETE server=12345" would otherwise authorise deleting server
- * 12345 in *any* organization the token can reach — the model could confirm
- * against one org and the call could execute against another. When
- * `FORGE_ORGANIZATION` is set the value is server-controlled and constant, so
- * omitting it is safe and keeps the phrase short.
+ *  1. **The tool name.** Path shape alone is ambiguous: seven guarded routes
+ *     share `POST /orgs/{org}/servers/{server}/...`, so a phrase built only from
+ *     the method and ids would let a confirmation for an nginx reboot authorise
+ *     a whole-server power-cycle.
+ *  2. **The target ids**, so one resource's confirmation cannot act on another.
+ *     The organization is included unless the operator pinned one — Forge ids
+ *     are scoped per organization, so without it the same id in another
+ *     organization would match.
+ *  3. **Effect-changing fields** such as `action`, so "reboot" and "stop" are
+ *     not interchangeable.
  *
  * @param organizationPinned Whether the server injects the organization itself.
  */
@@ -91,8 +118,14 @@ export function buildConfirmationPhrase(
     })
     .filter((part): part is string => part !== undefined);
 
-  const target = identifiers.length > 0 ? identifiers.join(' ') : descriptor.path;
-  return `${descriptor.method} ${target}`;
+  const effects = EFFECT_FIELDS.map((field) => {
+    const value = args[field];
+    if (value === undefined || value === null) return undefined;
+    return `${field}=${stringifyParam(field, value)}`;
+  }).filter((part): part is string => part !== undefined);
+
+  const parts = [descriptor.name, ...identifiers, ...effects];
+  return parts.join(' ');
 }
 
 /** Substitutes `{param}` placeholders, URL-encoding each value. */
@@ -126,6 +159,7 @@ export function renderPath(
 export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
   const { client, operations, schemas, defaultOrganization, allowDestructive } = options;
 
+  const validator = options.validator ?? new ArgumentValidator();
   const tools: RegisteredTool[] = [];
 
   for (const descriptor of operations) {
@@ -135,7 +169,7 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
     const omitParams = new Set<string>();
     if (defaultOrganization !== undefined) omitParams.add(ORGANIZATION_PARAM);
 
-    const supportsWait = descriptor.processingMode === 'async';
+    const supportsWait = supportsPolling(descriptor);
 
     const inputSchema = buildInputSchema({
       pathParams: descriptor.pathParams,
@@ -158,17 +192,47 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
       supportsWait,
     });
 
+    validator.register(descriptor.name, inputSchema);
+
     tools.push({
       name: descriptor.name,
       title: descriptor.summary,
       description: buildDescription(descriptor),
       inputSchema,
       descriptor,
-      handler: async (args) => executeOperation({ descriptor, args, client, defaultOrganization }),
+      handler: async (args) =>
+        executeOperation({ descriptor, args, client, defaultOrganization, validator }),
     });
   }
 
   return tools;
+}
+
+/**
+ * Whether an asynchronous operation has a completion state worth polling.
+ *
+ * Polling only means something when there is a resource to re-read that reports
+ * a status. Three shapes have none, and offering `wait` for them would be a lie:
+ *
+ *  - **Creates** answer on a collection URL. Re-reading it returns a list, which
+ *    has no status and would be treated as instantly terminal. The created
+ *    resource's own URL is only knowable from the response, so `wait` is offered
+ *    only when the API returns a `self` link, checked at call time.
+ *  - **Action routes** (`.../actions`) accept POST but have no GET, so there is
+ *    nothing to poll.
+ *  - **Deletions** complete by the resource ceasing to exist. That is handled
+ *    explicitly rather than by polling for a status that will never appear.
+ *
+ * Updates to an addressable resource — the common case, such as writing an
+ * nginx config — are the shape where polling genuinely works.
+ */
+function supportsPolling(descriptor: OperationDescriptor): boolean {
+  if (descriptor.processingMode !== 'async') return false;
+  if (descriptor.path.endsWith('/actions')) return false;
+
+  // A PUT/PATCH addresses the resource it modifies, so the same URL can be read
+  // back. DELETE is handled by absence, and POST is handled via the self link.
+  return descriptor.method === 'PUT' || descriptor.method === 'PATCH';
 }
 
 /** Composes the description a model reads before choosing a tool. */
@@ -203,14 +267,28 @@ interface ExecuteOptions {
   readonly args: Record<string, unknown>;
   readonly client: ForgeClient;
   readonly defaultOrganization: string | undefined;
+  readonly validator: ArgumentValidator;
 }
 
 /** Runs one operation: validate guard, build the request, optionally poll. */
 async function executeOperation(options: ExecuteOptions): Promise<unknown> {
-  const { descriptor, args, client, defaultOrganization } = options;
+  const { descriptor, args, client, defaultOrganization, validator } = options;
+
+  // Enforce the advertised schema before anything else. Without this the schema
+  // is advisory and a raw client could smuggle a field the tool never exposed.
+  //
+  // A missing `confirm` is deliberately excused here so the confirmation guard
+  // below can report the exact phrase required, which is far more useful than
+  // "missing required argument".
+  validator.assertValid(descriptor.name, args, descriptor.requiresConfirm ? ['confirm'] : []);
 
   const resolvedArgs: Record<string, unknown> = { ...args };
-  if (defaultOrganization !== undefined && resolvedArgs[ORGANIZATION_PARAM] === undefined) {
+
+  // A pinned organization is server-controlled, not a default. Letting a caller
+  // override it would allow a cross-organization call — and, because the pinned
+  // value is omitted from the confirmation phrase, one that was never named in
+  // the confirmation.
+  if (defaultOrganization !== undefined) {
     resolvedArgs[ORGANIZATION_PARAM] = defaultOrganization;
   }
 
@@ -250,7 +328,7 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     ...(body === undefined ? {} : { body }),
   });
 
-  const shouldWait = descriptor.processingMode === 'async' && resolvedArgs['wait'] === true;
+  const shouldWait = supportsPolling(descriptor) && resolvedArgs['wait'] === true;
   if (!shouldWait) {
     return {
       status: response.status,
@@ -267,10 +345,14 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     };
   }
 
-  // Poll the collection/resource the operation acted on. For a write, that is
-  // the same path with the write verb swapped for GET.
+  // Poll the resource's own URL. `self` from the response is authoritative;
+  // for a PUT/PATCH the request path already addresses the resource, so it is a
+  // sound fallback.
+  const selfLink = extractSelfLink(response.data);
+  const pollPath = selfLink ?? path;
+
   const polled = await pollUntilTerminal(async () => {
-    const read = await client.request({ method: 'GET', path, query: {} });
+    const read = await client.request({ method: 'GET', path: pollPath, query: {} });
     return read.data;
   });
 

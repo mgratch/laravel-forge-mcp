@@ -46,7 +46,11 @@ const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
 const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
   // Servers — destroys or detaches a machine.
   'organizations.servers.destroy',
-  'organizations.servers.archives.destroy',
+  // Archiving detaches a server from Forge; the spec calls it "Archive a
+  // server". The DELETE on this collection is the RECOVERY direction
+  // ("Unarchive a server"), so it is deliberately not listed here — see
+  // REVIEWED_SAFE_MUTATION_OPERATION_IDS.
+  'organizations.servers.archives.store',
   // Sites — removes the site and its files.
   'organizations.servers.sites.destroy',
   // Databases and database users — irreversible data loss.
@@ -80,6 +84,7 @@ const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
  * @see https://forge.laravel.com/docs/api-reference/introduction
  */
 const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
+  // Server and service lifecycle — can interrupt everything on the box.
   'organizations.servers.actions.store', // reboot / power-cycle the server
   'organizations.servers.services.nginx.actions.store',
   'organizations.servers.services.mysql.actions.store',
@@ -87,54 +92,151 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
   'organizations.servers.services.redis.actions.store',
   'organizations.servers.services.supervisor.actions.store',
   'organizations.servers.services.php.actions.store',
+
+  // Removing these is recoverable, but the gap is an outage: queue workers stop
+  // consuming, scheduled work stops running, TLS or routing breaks, or an
+  // access control disappears. "Recreatable" is not the same as "safe".
+  'organizations.servers.background-processes.destroy',
+  'organizations.servers.background-processes.actions.store',
+  'organizations.servers.scheduled-jobs.destroy',
+  'organizations.servers.sites.scheduled-jobs.destroy',
+  'organizations.servers.firewall-rules.destroy',
+  'organizations.servers.sites.security-rules.destroy',
+  'organizations.servers.sites.redirect-rules.destroy',
+  'organizations.servers.sites.domains.destroy',
+  'organizations.servers.sites.domains.certificates.destroy',
+  'organizations.servers.sites.domains.certificates.actions.store',
+  'organizations.servers.sites.domains.actions.store',
+  'organizations.servers.sites.integrations.horizon.destroy',
+  'organizations.servers.sites.integrations.octane.destroy',
+  'organizations.servers.sites.integrations.reverb.destroy',
+  'organizations.servers.sites.integrations.pulse.destroy',
+  'organizations.servers.sites.integrations.laravel-scheduler.destroy',
+  'organizations.servers.sites.integrations.laravel-maintenance.store',
+  'organizations.servers.sites.deployments.push-to-deploy.destroy',
+  'organizations.servers.nginx.templates.destroy',
+  'organizations.servers.php.opcache.destroy',
+
+  // Recovery direction for an archived server: reconnects it to Forge. Not
+  // destructive, but consequential enough to confirm.
+  'organizations.servers.archives.destroy',
+
+  // Team and access mutation — changes who can reach the infrastructure.
+  'organizations.teams.invites.store',
+  'organizations.teams.members.update',
+  'organizations.teams.servers.store',
+  'organizations.teams.server-credentials.store',
+  'organizations.teams.invites.destroy',
+  'organizations.teams.recipes.destroy',
+  'organizations.roles.update',
 ]);
 
 /**
- * DELETE operations that have been reviewed and deliberately left unguarded.
+ * Mutating operations reviewed and deliberately left unguarded.
  *
- * This list exists to make the safety classification **fail closed**. Without
+ * This list is what makes the safety classification **fail closed**. Without
  * it, a destructive operation added to a future version of the Forge spec would
- * simply not appear in either guard table and would ship as an ordinary tool —
- * the classification would fail open, in the direction that costs someone their
- * infrastructure.
+ * appear in no guard table and ship as an ordinary tool — failing open, in the
+ * direction that costs someone their infrastructure.
  *
- * Generation therefore refuses to run when a DELETE operation appears in none
- * of the three lists, forcing a human to decide which it belongs in. Everything
- * here removes a rule, a log, a schedule or a similar recreatable resource, not
- * a machine and not data.
+ * Generation therefore refuses to run when any non-read operation (POST, PUT,
+ * PATCH, DELETE) appears in none of the three lists, forcing a human to decide
+ * where it belongs. Restricting that check to DELETE would miss exactly the
+ * operations that hurt most: a restore, a team mutation, or a service action is
+ * a POST.
+ *
+ * Everything here creates or removes something recreatable whose absence does
+ * not interrupt a running service.
  */
-const REVIEWED_UNGUARDED_DELETE_OPERATION_IDS = new Set<string>([
+const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
+  'forge-recipes.runs.store',
+  'organization.recipes.store',
   'organizations.recipes.destroy',
-  'organizations.servers.background-processes.destroy',
-  'organizations.servers.firewall-rules.destroy',
+  'organizations.recipes.runs.store',
+  'organizations.recipes.update',
+  'organizations.roles.store',
+  'organizations.server-credentials.vpcs.store',
+  'organizations.servers.background-processes.store',
+  'organizations.servers.background-processes.update',
+  'organizations.servers.database.backups.instances.store',
+  'organizations.servers.database.backups.store',
+  'organizations.servers.database.backups.update',
+  'organizations.servers.database.password.update',
+  'organizations.servers.database.schemas.store',
+  'organizations.servers.database.schemas.synchronizations.store',
+  'organizations.servers.database.users.store',
+  'organizations.servers.database.users.update',
+  'organizations.servers.firewall-rules.store',
+  'organizations.servers.key.update',
   'organizations.servers.logs.destroy',
   'organizations.servers.monitors.destroy',
-  'organizations.servers.nginx.templates.destroy',
-  'organizations.servers.php.opcache.destroy',
-  'organizations.servers.scheduled-jobs.destroy',
+  'organizations.servers.monitors.store',
+  'organizations.servers.network.update',
+  'organizations.servers.nginx.templates.store',
+  'organizations.servers.nginx.templates.update',
+  'organizations.servers.php.cli-version.update',
+  'organizations.servers.php.max-execution-time.update',
+  'organizations.servers.php.max-upload-size.update',
+  'organizations.servers.php.opcache.store',
+  'organizations.servers.php.site-version.update',
+  'organizations.servers.php.versions.configs.cli.update',
+  'organizations.servers.php.versions.configs.fpm.update',
+  'organizations.servers.php.versions.configs.pool.update',
+  'organizations.servers.php.versions.store',
+  'organizations.servers.php.versions.update',
+  'organizations.servers.scheduled-jobs.store',
   'organizations.servers.sites.commands.destroy',
+  'organizations.servers.sites.commands.store',
   'organizations.servers.sites.composer.credentials.destroy',
-  'organizations.servers.sites.deployments.push-to-deploy.destroy',
+  'organizations.servers.sites.composer.credentials.store',
+  'organizations.servers.sites.composer.credentials.update',
+  'organizations.servers.sites.deploy-key.store',
+  'organizations.servers.sites.deployments.deploy-hook.update',
+  'organizations.servers.sites.deployments.push-to-deploy.store',
+  'organizations.servers.sites.deployments.script.update',
   'organizations.servers.sites.deployments.status.destroy',
-  'organizations.servers.sites.domains.certificates.destroy',
-  'organizations.servers.sites.domains.destroy',
+  'organizations.servers.sites.deployments.store',
+  'organizations.servers.sites.domains.certificates.store',
+  'organizations.servers.sites.domains.nginx.update',
+  'organizations.servers.sites.domains.store',
+  'organizations.servers.sites.domains.update',
+  'organizations.servers.sites.environment.update',
+  'organizations.servers.sites.healthcheck.update',
   'organizations.servers.sites.heartbeats.destroy',
-  'organizations.servers.sites.integrations.horizon.destroy',
+  'organizations.servers.sites.heartbeats.store',
+  'organizations.servers.sites.heartbeats.update',
+  'organizations.servers.sites.integrations.horizon.store',
+  'organizations.servers.sites.integrations.inertia.store',
   'organizations.servers.sites.integrations.laravel-maintenance.destroy',
-  'organizations.servers.sites.integrations.laravel-scheduler.destroy',
-  'organizations.servers.sites.integrations.octane.destroy',
-  'organizations.servers.sites.integrations.pulse.destroy',
-  'organizations.servers.sites.integrations.reverb.destroy',
+  'organizations.servers.sites.integrations.laravel-scheduler.store',
+  'organizations.servers.sites.integrations.octane.store',
+  'organizations.servers.sites.integrations.pulse.store',
+  'organizations.servers.sites.integrations.reverb.store',
+  'organizations.servers.sites.load-balancing-nodes.update',
   'organizations.servers.sites.logs.application.destroy',
   'organizations.servers.sites.logs.nginx-access.destroy',
   'organizations.servers.sites.logs.nginx-error.destroy',
+  'organizations.servers.sites.nginx.update',
   'organizations.servers.sites.npm.credentials.destroy',
-  'organizations.servers.sites.redirect-rules.destroy',
-  'organizations.servers.sites.scheduled-jobs.destroy',
-  'organizations.servers.sites.security-rules.destroy',
+  'organizations.servers.sites.npm.credentials.store',
+  'organizations.servers.sites.npm.credentials.update',
+  'organizations.servers.sites.redirect-rules.store',
+  'organizations.servers.sites.scheduled-jobs.store',
+  'organizations.servers.sites.security-rules.store',
+  'organizations.servers.sites.security-rules.update',
+  'organizations.servers.sites.store',
+  'organizations.servers.sites.storeOnBalancer',
+  'organizations.servers.sites.update',
   'organizations.servers.sites.webhooks.destroy',
-  'organizations.teams.invites.destroy',
-  'organizations.teams.recipes.destroy',
+  'organizations.servers.sites.webhooks.store',
+  'organizations.servers.ssh-keys.store',
+  'organizations.servers.store',
+  'organizations.servers.update',
+  'organizations.storage-providers.store',
+  'organizations.storage-providers.update',
+  'organizations.teams.recipes.store',
+  'organizations.teams.store',
+  'organizations.teams.update',
 ]);
 
 /**
@@ -235,7 +337,8 @@ function main(): void {
   const seenOperationIds = new Set<string>();
   let destructiveCount = 0;
   let confirmCount = 0;
-  const unclassifiedDeletes: string[] = [];
+  const unclassifiedMutations: string[] = [];
+  const doubleClassified: string[] = [];
 
   for (const [path, pathItem] of Object.entries(spec.paths)) {
     for (const method of HTTP_METHODS) {
@@ -276,13 +379,16 @@ function main(): void {
       const bodySchemaInline =
         bodySchemaRaw !== undefined && bodySchemaRef === undefined ? bodySchemaRaw : undefined;
 
-      if (
-        method === 'delete' &&
-        !DESTRUCTIVE_OPERATION_IDS.has(operationId) &&
-        !CONFIRM_REQUIRED_OPERATION_IDS.has(operationId) &&
-        !REVIEWED_UNGUARDED_DELETE_OPERATION_IDS.has(operationId)
-      ) {
-        unclassifiedDeletes.push(operationId);
+      // Reads need no classification; every mutation does.
+      if (method !== 'get') {
+        const classifications = [
+          DESTRUCTIVE_OPERATION_IDS.has(operationId),
+          CONFIRM_REQUIRED_OPERATION_IDS.has(operationId),
+          REVIEWED_SAFE_MUTATION_OPERATION_IDS.has(operationId),
+        ].filter(Boolean).length;
+
+        if (classifications === 0) unclassifiedMutations.push(operationId);
+        if (classifications > 1) doubleClassified.push(operationId);
       }
 
       const isDestructive = DESTRUCTIVE_OPERATION_IDS.has(operationId);
@@ -338,7 +444,7 @@ function main(): void {
   for (const id of [
     ...DESTRUCTIVE_OPERATION_IDS,
     ...CONFIRM_REQUIRED_OPERATION_IDS,
-    ...REVIEWED_UNGUARDED_DELETE_OPERATION_IDS,
+    ...REVIEWED_SAFE_MUTATION_OPERATION_IDS,
   ]) {
     if (!seenOperationIds.has(id)) {
       throw new Error(
@@ -348,17 +454,24 @@ function main(): void {
     }
   }
 
-  // Fail closed: every DELETE must be explicitly classified. A destructive
+  // Fail closed: every mutation must be classified exactly once. A destructive
   // operation added by a future spec would otherwise ship unguarded simply by
   // being absent from the tables.
-  if (unclassifiedDeletes.length > 0) {
+  if (unclassifiedMutations.length > 0) {
     throw new Error(
-      `${unclassifiedDeletes.length} DELETE operation(s) are not classified:\n` +
-        unclassifiedDeletes.map((id) => `  - ${id}`).join('\n') +
-        '\n\nAdd each to DESTRUCTIVE_OPERATION_IDS (destroys infrastructure or data), ' +
-        'CONFIRM_REQUIRED_OPERATION_IDS (interrupts a live service), or ' +
-        'REVIEWED_UNGUARDED_DELETE_OPERATION_IDS (removes something recreatable) ' +
+      `${unclassifiedMutations.length} mutating operation(s) are not classified:\n` +
+        unclassifiedMutations.map((id) => `  - ${id}`).join('\n') +
+        '\n\nAdd each to exactly one of DESTRUCTIVE_OPERATION_IDS (destroys ' +
+        'infrastructure or data), CONFIRM_REQUIRED_OPERATION_IDS (can interrupt a live ' +
+        'service), or REVIEWED_SAFE_MUTATION_OPERATION_IDS (recreatable, no interruption) ' +
         'in scripts/generate-operations.ts.',
+    );
+  }
+
+  if (doubleClassified.length > 0) {
+    throw new Error(
+      `${doubleClassified.length} operation(s) appear in more than one classification table:\n` +
+        doubleClassified.map((id) => `  - ${id}`).join('\n'),
     );
   }
 

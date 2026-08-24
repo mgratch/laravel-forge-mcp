@@ -6,7 +6,7 @@ import {
   ForgeRateLimitError,
 } from '../src/client/errors.js';
 import { ForgeClient } from '../src/client/http.js';
-import { extractNextCursor, normalizeResponse } from '../src/client/jsonapi.js';
+import { extractNextCursor, extractSelfLink, normalizeResponse } from '../src/client/jsonapi.js';
 import {
   RateLimiter,
   parseRateLimitHeaders,
@@ -63,11 +63,13 @@ describe('request headers', () => {
     expect(headers['accept']).toBe('application/json');
   });
 
-  it('omits Content-Type when there is no body', async () => {
+  it('sends Content-Type even without a body, as the docs require', async () => {
+    // Forge documents Accept and Content-Type as required on every request.
+    // @see https://forge.laravel.com/docs/api-reference/introduction
     const stub = stubFetch([{ body: {} }]);
     await makeClient(stub).request({ method: 'GET', path: '/user' });
 
-    expect(stub.requests[0]?.headers['content-type']).toBeUndefined();
+    expect(stub.requests[0]?.headers['content-type']).toBe('application/json');
   });
 
   it('sends Content-Type and a JSON body on writes', async () => {
@@ -216,6 +218,29 @@ describe('error mapping', () => {
     expect(stub.requests).toHaveLength(2);
   });
 
+  it('waits the full Retry-After even when it exceeds the backoff cap', async () => {
+    const slept: number[] = [];
+    const stub = stubFetch([
+      { status: 429, body: { message: 'slow down' }, headers: { 'retry-after': '60' } },
+      { body: {} },
+    ]);
+
+    const client = new ForgeClient({
+      apiKey: API_KEY,
+      fetch: stub.fetch,
+      sleep: async (ms) => {
+        slept.push(ms);
+        await Promise.resolve();
+      },
+      rateLimiter: new RateLimiter({ sleep: instantSleep }),
+    });
+
+    await client.request({ method: 'GET', path: '/user' });
+
+    // Capping this to 30s would knowingly re-send before Forge's stated delay.
+    expect(slept).toContain(60_000);
+  });
+
   it('exposes retryAfterSeconds when a 429 is not retried away', async () => {
     const stub = stubFetch([
       { status: 429, body: { message: 'slow down' }, headers: { 'retry-after': '12' } },
@@ -253,6 +278,28 @@ describe('JSON:API normalisation', () => {
     });
 
     expect(result.data).toMatchObject({ id: '7', attribute_id: 'inner' });
+  });
+
+  it('keeps included resources so an include= query is not paid for in vain', () => {
+    const result = normalizeResponse({
+      data: { id: '1', type: 'sites', attributes: { domain: 'example.com' } },
+      included: [{ id: '9', type: 'servers', attributes: { name: 'web-1' } }],
+    });
+
+    expect(result.included).toEqual([{ id: '9', type: 'servers', name: 'web-1' }]);
+  });
+
+  it('keeps a resource self link for asynchronous polling', () => {
+    const result = normalizeResponse({
+      data: {
+        id: '1',
+        type: 'servers',
+        attributes: { name: 'web-1' },
+        links: { self: '/api/orgs/acme/servers/1' },
+      },
+    });
+
+    expect(extractSelfLink(result.data)).toBe('/api/orgs/acme/servers/1');
   });
 
   it('passes non-JSON:API bodies through untouched', () => {
@@ -402,6 +449,24 @@ describe('rate limiting', () => {
     await limiter.acquire();
 
     expect(slept.length).toBeGreaterThan(0);
+  });
+
+  it('reserves the server-reported budget across concurrent acquisitions', async () => {
+    const limiter = new RateLimiter({ sleep: instantSleep, reserve: 0 });
+    limiter.observe(new Headers({ 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '3' }));
+
+    await Promise.all([limiter.acquire(), limiter.acquire(), limiter.acquire()]);
+
+    // Without reservation each caller keeps reading "3" until a response lands.
+    expect(limiter.snapshot.remaining).toBe(0);
+  });
+
+  it('ignores a stale larger remaining count for the same window', () => {
+    const limiter = new RateLimiter({ sleep: instantSleep });
+    limiter.observe(new Headers({ 'x-ratelimit-remaining': '5', 'x-ratelimit-reset': '100' }));
+    limiter.observe(new Headers({ 'x-ratelimit-remaining': '40', 'x-ratelimit-reset': '100' }));
+
+    expect(limiter.snapshot.remaining).toBe(5);
   });
 
   it('reports a snapshot for diagnostics', async () => {

@@ -7,7 +7,7 @@
  * Source of truth: https://forge.laravel.com/api/docs.openapi
  * Human documentation: https://forge.laravel.com/docs/api-reference/introduction
  *
- * 273 operations · 17 destructive · 24 confirmation-gated
+ * 273 operations · 17 destructive · 52 confirmation-gated
  */
 
 import type { OperationDescriptor } from '../tools/types.js';
@@ -100,7 +100,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_background_processes_log",
@@ -797,7 +797,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_deployments",
@@ -950,7 +950,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_integrations_horizon",
@@ -1001,7 +1001,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_integrations_octane",
@@ -1052,7 +1052,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_integrations_reverb",
@@ -1103,7 +1103,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_integrations_inertia",
@@ -1188,7 +1188,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_integrations_laravel_maintenance",
@@ -1222,7 +1222,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "delete_servers_sites_integrations_laravel_maintenance",
@@ -1290,7 +1290,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_logs",
@@ -1477,7 +1477,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "list_",
@@ -1919,7 +1919,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "list_forge_recipes",
@@ -2038,7 +2038,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "list_predefined_roles",
@@ -2174,7 +2174,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: {"allOf":[{"$ref":"#/components/schemas/UpdateRoleRequest"},{"type":"object","properties":{"description":{"type":"string"}}}]},
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "delete_roles",
@@ -2378,7 +2378,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_scheduled_jobs_outputs",
@@ -2463,7 +2463,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_scheduled_jobs_outputs",
@@ -2565,7 +2565,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "list_teams_server_credentials",
@@ -2599,7 +2599,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "delete_teams_server_credentials",
@@ -2683,8 +2683,8 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchema: "ArchiveRequest",
     bodySchemaInline: undefined,
     bodyRequired: true,
-    destructive: false,
-    requiresConfirm: false,
+    destructive: true,
+    requiresConfirm: true,
   },
   {
     name: "delete_servers_archives",
@@ -2700,7 +2700,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchema: undefined,
     bodySchemaInline: undefined,
     bodyRequired: false,
-    destructive: true,
+    destructive: false,
     requiresConfirm: true,
   },
   {
@@ -2718,7 +2718,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "create_servers_actions",
@@ -3347,7 +3347,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "list_teams_servers",
@@ -3381,7 +3381,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "delete_teams_servers",
@@ -3636,7 +3636,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "servers_sites_domains_configurations",
@@ -3670,7 +3670,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_domains_nginx",
@@ -3806,7 +3806,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "create_servers_sites_domains_certificates_actions",
@@ -3823,7 +3823,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_sites_healthcheck",
@@ -4537,7 +4537,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "delete_teams_members",
@@ -4588,7 +4588,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_teams_invites",
@@ -4622,7 +4622,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     destructive: false,
-    requiresConfirm: false,
+    requiresConfirm: true,
   },
   {
     name: "get_user",

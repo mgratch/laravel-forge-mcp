@@ -143,10 +143,31 @@ export class RateLimiter {
     return run;
   }
 
-  /** Folds a response's rate-limit headers into the limiter's state. */
+  /**
+   * Folds a response's rate-limit headers into the limiter's state.
+   *
+   * Responses can arrive out of order, so a *larger* remaining count for the
+   * same window is treated as stale and ignored: believing it would undo a
+   * reservation already made and let a burst overshoot the real budget.
+   */
   public observe(headers: Headers): void {
     const snapshot = parseRateLimitHeaders(headers);
     if (snapshot.limit === undefined && snapshot.remaining === undefined) return;
+
+    const previous = this.serverState;
+    const sameWindow = previous !== undefined && previous.reset === snapshot.reset;
+
+    if (
+      sameWindow &&
+      previous.remaining !== undefined &&
+      snapshot.remaining !== undefined &&
+      snapshot.remaining > previous.remaining
+    ) {
+      // Keep the more conservative view; adopt any other fields.
+      this.serverState = { ...snapshot, remaining: previous.remaining };
+      return;
+    }
+
     this.serverState = snapshot;
   }
 
@@ -189,6 +210,14 @@ export class RateLimiter {
     }
 
     this.timestamps.push(this.now());
+
+    // Reserve against the server's own count. Without this, every queued
+    // acquisition keeps reading the same `remaining` until another response
+    // lands, so a burst can send far more than the reported budget allows.
+    const serverState = this.serverState;
+    if (serverState?.remaining !== undefined) {
+      this.serverState = { ...serverState, remaining: Math.max(0, serverState.remaining - 1) };
+    }
   }
 
   private millisUntilServerReset(): number {

@@ -23,7 +23,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "bin": {
     "laravel-forge-mcp": "./dist/index.js"
@@ -50,10 +50,13 @@
     "test:coverage": "vitest run --coverage",
     "check": "npm run format && npm run lint && npm run typecheck && npm run test",
     "prepublishOnly": "npm run build",
-    "docs": "tsx scripts/generate-docs.ts"
+    "docs": "tsx scripts/generate-docs.ts",
+    "refresh-spec": "tsx scripts/refresh-spec.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

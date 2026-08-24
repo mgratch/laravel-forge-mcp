@@ -44,6 +44,16 @@ export interface NormalizedResponse {
   readonly meta: Record<string, unknown> | undefined;
   /** Response `links`, carrying `next`/`prev` URLs when present. */
   readonly links: Record<string, unknown> | undefined;
+  /**
+   * Resources pulled in by an `include=` query, flattened the same way as
+   * `data`.
+   *
+   * Dropping these would mean a caller pays for the expanded response and never
+   * receives it.
+   *
+   * @see https://forge.laravel.com/docs/api-reference/relationships
+   */
+  readonly included: FlatResource[] | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,6 +101,16 @@ function flattenResource(resource: JsonApiResource): FlatResource {
     flat['relationships'] = resource.relationships;
   }
 
+  // `links.self` is the canonical URL for this resource, which is what an async
+  // operation should poll. Namespaced so it cannot collide with an attribute.
+  if (isRecord(resource.links) && Object.keys(resource.links).length > 0) {
+    flat['$links'] = resource.links;
+  }
+
+  if (isRecord(resource.meta) && Object.keys(resource.meta).length > 0) {
+    flat['$meta'] = resource.meta;
+  }
+
   return flat;
 }
 
@@ -106,10 +126,11 @@ export function normalizeResponse(body: unknown): NormalizedResponse {
       data: (body ?? null) as FlatResource | FlatResource[] | null,
       meta: undefined,
       links: undefined,
+      included: undefined,
     };
   }
 
-  const { data, meta, links } = body;
+  const { data, meta, links, included } = body;
 
   const flattened: FlatResource | FlatResource[] | null =
     data === null || data === undefined
@@ -122,7 +143,28 @@ export function normalizeResponse(body: unknown): NormalizedResponse {
     data: flattened,
     meta: isRecord(meta) ? meta : undefined,
     links: isRecord(links) ? links : undefined,
+    included:
+      Array.isArray(included) && included.length > 0 ? included.map(flattenResource) : undefined,
   };
+}
+
+/**
+ * Reads a resource's canonical `self` URL, when the API supplied one.
+ *
+ * Used to poll the right URL after an asynchronous operation instead of
+ * guessing from the write route — a create answers on a collection URL, which
+ * is not the thing to re-read.
+ */
+export function extractSelfLink(resource: unknown): string | undefined {
+  if (!isRecord(resource)) return undefined;
+
+  const links = resource['$links'];
+  if (!isRecord(links)) return undefined;
+
+  const self = links['self'];
+  if (typeof self === 'string') return self;
+  if (isRecord(self) && typeof self['href'] === 'string') return self['href'];
+  return undefined;
 }
 
 /**

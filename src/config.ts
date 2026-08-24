@@ -20,12 +20,26 @@ export interface ServerConfig {
   readonly maxRetries: number;
 }
 
-/** Values accepted as "true" for boolean environment variables. */
-const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
-
-function readBoolean(value: string | undefined): boolean {
+/**
+ * Reads the destructive-operations kill switch.
+ *
+ * Only the exact documented value `1` enables it. Accepting `true`/`yes`/`on`
+ * as well would widen the set of ways a stray environment value can arm
+ * infrastructure deletion, and a switch of this consequence should have exactly
+ * one spelling. Any other non-empty value is a configuration error rather than
+ * a silent "off", so a typo is loud instead of surprising.
+ */
+function readDestructiveFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
-  return TRUTHY.has(value.trim().toLowerCase());
+
+  const trimmed = value.trim();
+  if (trimmed === '') return false;
+  if (trimmed === '1') return true;
+
+  throw new ForgeConfigurationError(
+    `FORGE_MCP_ALLOW_DESTRUCTIVE must be exactly "1" to enable destructive tools, ` +
+      `received "${value}". Unset it to keep them disabled.`,
+  );
 }
 
 function readInteger(value: string | undefined, fallback: number, label: string): number {
@@ -59,7 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     apiKey,
     baseUrl: env['FORGE_API_BASE_URL']?.trim() || DEFAULT_BASE_URL,
     organization: organization === '' ? undefined : organization,
-    allowDestructive: readBoolean(env['FORGE_MCP_ALLOW_DESTRUCTIVE']),
+    allowDestructive: readDestructiveFlag(env['FORGE_MCP_ALLOW_DESTRUCTIVE']),
     timeoutMs: readInteger(env['FORGE_TIMEOUT_MS'], 30_000, 'FORGE_TIMEOUT_MS'),
     maxRetries: readInteger(env['FORGE_MAX_RETRIES'], 3, 'FORGE_MAX_RETRIES'),
   };

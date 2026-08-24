@@ -47,19 +47,23 @@ Generate a token at [forge.laravel.com/profile/api](https://forge.laravel.com/pr
 
 ### Environment variables
 
-| Variable                      | Required | Default                         | Purpose                                                                                                            |
-| ----------------------------- | -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `FORGE_API_KEY`               | yes      | —                               | API token.                                                                                                         |
-| `FORGE_ORGANIZATION`          | no       | —                               | Organization **slug**. When set, `organization` disappears from every tool signature and is injected server-side.  |
-| `FORGE_MCP_ALLOW_DESTRUCTIVE` | no       | `false`                         | Register destructive tools (server/site/database deletion, restores, team mutation). They still require `confirm`. |
-| `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                 |
-| `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                               |
-| `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                          |
+| Variable                      | Required | Default                         | Purpose                                                                                                                               |
+| ----------------------------- | -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `FORGE_API_KEY`               | yes      | —                               | API token.                                                                                                                            |
+| `FORGE_ORGANIZATION`          | no       | —                               | Organization **slug**. When set, `organization` disappears from every tool signature and is injected server-side.                     |
+| `FORGE_MCP_ALLOW_DESTRUCTIVE` | no       | unset                           | Set to exactly `1` to register destructive tools. They still require `confirm`. Any other value is rejected as a configuration error. |
+| `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                                    |
+| `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                                                  |
+| `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                                             |
 
 ## Safety model
 
 Forge's API can destroy production infrastructure. This server treats that as a design constraint
 rather than a disclaimer.
+
+Arguments are validated against each tool's advertised JSON Schema **before** the confirmation
+guard and before any network call, so an unknown or malformed argument fails with a clear message
+and issues no request.
 
 **Two independent gates protect destructive operations:**
 
@@ -71,16 +75,22 @@ rather than a disclaimer.
    operation _and its target_:
 
    ```jsonc
-   { "server": 12345, "confirm": "DELETE server=12345" }
+   { "server": 12345, "confirm": "delete_servers server=12345" }
    ```
+
+   The phrase names the **tool**, its **target ids**, and any **effect-changing
+   field** such as `action` — because seven guarded routes share the shape
+   `POST /orgs/{org}/servers/{server}/…`, and one route serves both "reboot
+   nginx" and "stop nginx".
 
    A generic `"yes"` is refused, and so is a phrase naming a different server — so a model cannot
    satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.
    The request is never sent if the phrase does not match.
 
-   When `FORGE_ORGANIZATION` is **not** pinned the phrase also carries the organization
-   (`"DELETE organization=acme server=12345"`), because Forge ids are scoped per organization and a
-   phrase without it would authorise the same id in any organization the token can reach.
+   When `FORGE_ORGANIZATION` is **not** pinned the phrase also carries the organization, because
+   Forge ids are scoped per organization and a phrase without it would authorise the same id in any
+   organization the token can reach. When it **is** pinned, the value is server-controlled: passing
+   `organization` yourself is rejected rather than honoured.
 
 **Confirmation also covers non-deletions that can take a site down.** Service actions are the
 clearest case: the API exposes `stop` for nginx but has no `start`, so a careless stop has no

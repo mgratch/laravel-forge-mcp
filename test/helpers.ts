@@ -135,3 +135,20 @@ export function loadSpecSchemas(): SchemaRegistry {
   };
   return document.components?.schemas ?? {};
 }
+
+/** Counts operations in the vendored spec, so tests need no hardcoded total. */
+export function countSpecOperations(): number {
+  const specPath = resolve(HERE, '../spec/forge.openapi.json');
+  const document = JSON.parse(readFileSync(specPath, 'utf8')) as {
+    paths: Record<string, Record<string, unknown>>;
+  };
+
+  const methods = new Set(['get', 'post', 'put', 'patch', 'delete']);
+  let total = 0;
+  for (const item of Object.values(document.paths)) {
+    for (const method of Object.keys(item)) {
+      if (methods.has(method)) total += 1;
+    }
+  }
+  return total;
+}

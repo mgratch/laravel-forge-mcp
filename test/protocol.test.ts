@@ -160,7 +160,7 @@ describe('tools/call', () => {
 
     expect(result.isError).toBe(true);
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
-    expect(text).toContain('DELETE server=12345');
+    expect(text).toContain('delete_servers server=12345');
     expect(stub.requests).toHaveLength(0);
   });
 
@@ -172,12 +172,41 @@ describe('tools/call', () => {
 
     const result = await client.callTool({
       name: 'delete_servers',
-      arguments: { server: 12345, confirm: 'DELETE server=12345' },
+      arguments: { server: 12345, confirm: 'delete_servers server=12345' },
     });
 
     expect(result.isError).toBeFalsy();
     expect(stub.requests).toHaveLength(1);
     expect(stub.requests[0]?.method).toBe('DELETE');
+  });
+
+  it('rejects an argument the tool never advertised, without issuing a request', async () => {
+    // The MCP protocol validates the envelope, not `arguments`. Without runtime
+    // validation, `additionalProperties: false` would be advisory and a raw
+    // client could smuggle a field straight into the request body.
+    const { client, stub } = await connect({});
+
+    const result = await client.callTool({
+      name: 'list_servers',
+      arguments: { not_a_real_argument: 'smuggled' },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? '';
+    expect(text).toContain('not_a_real_argument');
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('rejects a required argument of the wrong type, without issuing a request', async () => {
+    const { client, stub } = await connect({});
+
+    const result = await client.callTool({
+      name: 'get_servers',
+      arguments: { server: { nested: 'object' } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(stub.requests).toHaveLength(0);
   });
 
   it('maps a 429 to rate-limit guidance', async () => {

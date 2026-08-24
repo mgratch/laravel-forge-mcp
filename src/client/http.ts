@@ -170,7 +170,7 @@ export class ForgeClient {
       // `body: undefined` is not assignable to `RequestInit`.
       const init: RequestInit = {
         method: options.method,
-        headers: this.buildHeaders(options),
+        headers: this.buildHeaders(),
         signal: controller.signal,
       };
       if (options.body !== undefined) {
@@ -200,20 +200,18 @@ export class ForgeClient {
     }
   }
 
-  private buildHeaders(options: RequestOptions): Record<string, string> {
-    const headers: Record<string, string> = {
+  private buildHeaders(): Record<string, string> {
+    // Forge documents both headers as required on every request, not only on
+    // those carrying a body.
+    // @see https://forge.laravel.com/docs/api-reference/introduction
+    return {
       Authorization: `Bearer ${this.apiKey}`,
       // The docs instruct clients to send `application/json` even though
       // responses are declared as `application/vnd.api+json`.
       Accept: 'application/json',
+      'Content-Type': 'application/json',
       'User-Agent': 'laravel-forge-mcp',
     };
-
-    if (options.body !== undefined) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    return headers;
   }
 
   private buildUrl(path: string, query: RequestOptions['query']): string {
@@ -246,9 +244,11 @@ export class ForgeClient {
   }
 
   private backoffDelay(attempt: number, lastError: unknown): number {
-    // A 429 tells us exactly how long to wait; trust it over the backoff curve.
+    // A 429 states exactly how long to wait. Honour it in full: capping it would
+    // knowingly re-send before Forge's requested delay expires, which is worse
+    // than waiting. MAX_RETRY_DELAY_MS bounds only our own computed backoff.
     if (lastError instanceof ForgeRateLimitError && lastError.retryAfterSeconds !== undefined) {
-      return Math.min(lastError.retryAfterSeconds * 1000, MAX_RETRY_DELAY_MS);
+      return lastError.retryAfterSeconds * 1000;
     }
 
     const exponential = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);

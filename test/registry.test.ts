@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ForgeConfirmationError } from '../src/client/errors.js';
+import { ForgeValidationError } from '../src/tools/validate.js';
 import { ForgeClient } from '../src/client/http.js';
 import { RateLimiter } from '../src/client/rate-limit.js';
 import { OPERATIONS } from '../src/generated/operations.js';
@@ -63,7 +64,7 @@ describe('renderPath', () => {
 
   it('rejects a non-scalar path parameter', () => {
     expect(() => renderPath('/orgs/{organization}', { organization: { slug: 'acme' } })).toThrow(
-      /must be a string, number or boolean/,
+      /must be a string, number, boolean or an array/,
     );
   });
 });
@@ -106,7 +107,7 @@ describe('confirmation guard', () => {
       true,
     );
 
-    expect(phrase).toBe('DELETE server=12345');
+    expect(phrase).toBe('delete_servers server=12345');
   });
 
   it('excludes the organization from the phrase when the operator pinned one', () => {
@@ -120,7 +121,7 @@ describe('confirmation guard', () => {
     const descriptor = OPERATIONS.find((op) => op.name === deleteServer) as OperationDescriptor;
     const phrase = buildConfirmationPhrase(descriptor, { organization: 'acme', server: 1 }, false);
 
-    expect(phrase).toBe('DELETE organization=acme server=1');
+    expect(phrase).toBe('delete_servers organization=acme server=1');
   });
 
   it('will not let a confirmation for one organization authorise another', async () => {
@@ -135,7 +136,7 @@ describe('confirmation guard', () => {
       tool.handler({
         organization: 'other-corp',
         server: 12345,
-        confirm: 'DELETE organization=acme server=12345',
+        confirm: 'delete_servers organization=acme server=12345',
       }),
     ).rejects.toThrow(ForgeConfirmationError);
     expect(stub.requests).toHaveLength(0);
@@ -158,7 +159,7 @@ describe('confirmation guard', () => {
     const tool = findTool(tools, deleteServer);
 
     await expect(
-      tool.handler({ organization: 'acme', server: 12345, confirm: 'DELETE server=99999' }),
+      tool.handler({ organization: 'acme', server: 12345, confirm: 'delete_servers server=99999' }),
     ).rejects.toThrow(ForgeConfirmationError);
     expect(stub.requests).toHaveLength(0);
   });
@@ -181,7 +182,7 @@ describe('confirmation guard', () => {
     await tool.handler({
       organization: 'acme',
       server: 12345,
-      confirm: 'DELETE organization=acme server=12345',
+      confirm: 'delete_servers organization=acme server=12345',
     });
 
     expect(stub.requests).toHaveLength(1);
@@ -227,13 +228,26 @@ describe('organization handling', () => {
     expect(stub.requests[0]?.url).toContain('/orgs/acme/servers');
   });
 
-  it('lets an explicit argument override the pinned slug', async () => {
+  it('refuses a caller-supplied slug when one is pinned', async () => {
+    // A pinned organization is server-controlled and removed from the schema,
+    // so supplying one is an unknown argument. Silently ignoring it would be
+    // weaker: this way the caller learns the override had no effect.
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
+
+    await expect(
+      findTool(tools, 'list_servers').handler({ organization: 'other' }),
+    ).rejects.toThrow(/unknown argument "organization"/);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('uses the pinned slug for the request', async () => {
     const stub = stubFetch([{ body: jsonApiResource('servers', 1, {}) }]);
     const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
 
-    await findTool(tools, 'list_servers').handler({ organization: 'other' });
+    await findTool(tools, 'list_servers').handler({});
 
-    expect(stub.requests[0]?.url).toContain('/orgs/other/servers');
+    expect(stub.requests[0]?.url).toContain('/orgs/acme/servers');
   });
 });
 
@@ -260,9 +274,10 @@ describe('request assembly', () => {
     const stub = stubFetch([]);
     const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
 
+    // Caught by schema validation before it can reach URL assembly.
     await expect(
       findTool(tools, 'list_servers').handler({ 'filter[name]': { evil: true } }),
-    ).rejects.toThrow(/must be a string, number or boolean/);
+    ).rejects.toThrow(ForgeValidationError);
     expect(stub.requests).toHaveLength(0);
   });
 
@@ -276,8 +291,7 @@ describe('request assembly', () => {
 
     await findTool(tools, 'delete_servers').handler({
       server: 5,
-      confirm: 'DELETE server=5',
-      wait: false,
+      confirm: 'delete_servers server=5',
     });
 
     expect(stub.requests[0]?.body).toBeUndefined();
@@ -285,18 +299,30 @@ describe('request assembly', () => {
 });
 
 describe('async operations', () => {
-  it('offers a wait argument only on async operations', () => {
+  it('offers wait only where a resource can actually be polled', () => {
     const stub = stubFetch([]);
     const tools = makeRegistry(stub, { organization: 'acme' });
 
-    const asyncTool = tools.find((tool) => tool.descriptor.processingMode === 'async');
+    const hasWait = (tool: (typeof tools)[number]): boolean =>
+      (tool.inputSchema['properties'] as Record<string, unknown>)['wait'] !== undefined;
+
+    // An async PUT addresses the resource it changes, so it can be re-read.
+    const asyncPut = tools.find(
+      (tool) => tool.descriptor.processingMode === 'async' && tool.descriptor.method === 'PUT',
+    );
+    expect(asyncPut && hasWait(asyncPut)).toBe(true);
+
+    // Sync operations have nothing to wait for.
     const syncTool = tools.find((tool) => tool.descriptor.processingMode === 'sync');
+    expect(syncTool && hasWait(syncTool)).toBe(false);
 
-    const asyncProps = asyncTool?.inputSchema['properties'] as Record<string, unknown>;
-    const syncProps = syncTool?.inputSchema['properties'] as Record<string, unknown>;
-
-    expect(asyncProps['wait']).toBeDefined();
-    expect(syncProps['wait']).toBeUndefined();
+    // Action routes accept POST but expose no GET, so polling them is not
+    // possible; offering wait there would be a lie.
+    for (const tool of tools.filter((candidate) =>
+      candidate.descriptor.path.endsWith('/actions'),
+    )) {
+      expect(hasWait(tool), `${tool.name} should not offer wait`).toBe(false);
+    }
   });
 
   it('returns immediately with a note when wait is not requested', async () => {
@@ -315,27 +341,29 @@ describe('async operations', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('polls until terminal when wait is requested', async () => {
+  it('polls the resource until it reaches a terminal state', async () => {
     const stub = stubFetch([
       { status: 202 },
-      { body: jsonApiResource('deployments', 1, { status: 'deploying' }) },
-      { body: jsonApiResource('deployments', 1, { status: 'finished' }) },
+      { body: jsonApiResource('nginxConfigs', 1, { status: 'updating' }) },
+      { body: jsonApiResource('nginxConfigs', 1, { status: 'installed' }) },
     ]);
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
-      only: ['create_servers_sites_deployments'],
+      only: ['update_servers_sites_nginx'],
     });
-    const tool = tools.find((candidate) => candidate.name === 'create_servers_sites_deployments');
+    const tool = tools.find((candidate) => candidate.name === 'update_servers_sites_nginx');
     if (!tool) return;
 
-    const result = (await tool.handler({ server: 1, site: 2, wait: true })) as Record<
-      string,
-      unknown
-    >;
+    const result = (await tool.handler({
+      server: 1,
+      site: 2,
+      config: 'server { }',
+      wait: true,
+    })) as Record<string, unknown>;
 
     const polled = result['polled'] as Record<string, unknown>;
-    expect(polled['status']).toBe('finished');
+    expect(polled['status']).toBe('installed');
     expect(stub.requests.length).toBeGreaterThanOrEqual(2);
   }, 20_000);
 });

@@ -7,7 +7,7 @@ Every tool below maps to exactly one operation in the [Laravel Forge API](https:
 - **273** tools total
 - **105** are asynchronous and accept `wait: true` to poll until the operation settles
 - **17** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
-- **24** require a matching `confirm` argument
+- **52** require a matching `confirm` argument
 
 ## Argument conventions
 
@@ -40,7 +40,7 @@ These are hidden unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`, and always require `con
 | `delete_roles` | `DELETE /orgs/{organization}/roles/{role}` |
 | `delete_servers_ssh_keys` | `DELETE /orgs/{organization}/servers/{server}/ssh-keys/{key}` |
 | `delete_teams_server_credentials` | `DELETE /orgs/{organization}/teams/{team}/server-credentials/{credential}` |
-| `delete_servers_archives` | `DELETE /orgs/{organization}/servers/archives/{server}` |
+| `create_servers_archives` | `POST /orgs/{organization}/servers/archives` |
 | `delete_servers` | `DELETE /orgs/{organization}/servers/{server}` |
 | `delete_servers_php_versions` | `DELETE /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` |
 | `delete_teams_servers` | `DELETE /orgs/{organization}/teams/{team}/servers/{server}` |
@@ -56,6 +56,25 @@ counterpart in the API, so a mistake is not trivially reversible.
 
 | Tool | Endpoint |
 | --- | --- |
+| `delete_servers_background_processes` | `DELETE /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` |
+| `delete_servers_sites_deployments_push_to_deploy` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` |
+| `delete_servers_firewall_rules` | `DELETE /orgs/{organization}/servers/{server}/firewall-rules/{rule}` |
+| `delete_servers_sites_integrations_horizon` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` |
+| `delete_servers_sites_integrations_octane` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/octane` |
+| `delete_servers_sites_integrations_reverb` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/reverb` |
+| `delete_servers_sites_integrations_pulse` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` |
+| `create_servers_sites_integrations_laravel_maintenance` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` |
+| `delete_servers_sites_integrations_laravel_scheduler` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` |
+| `delete_servers_nginx_templates` | `DELETE /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` |
+| `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` |
+| `delete_servers_sites_redirect_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules/{redirectRule}` |
+| `update_roles` | `PUT /orgs/{organization}/roles/{role}` |
+| `delete_servers_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` |
+| `delete_servers_sites_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` |
+| `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` |
+| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` |
+| `delete_servers_archives` | `DELETE /orgs/{organization}/servers/archives/{server}` |
+| `create_servers_background_processes_actions` | `POST /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/actions` |
 | `create_servers_actions` | `POST /orgs/{organization}/servers/{server}/actions` |
 | `create_servers_services_nginx_actions` | `POST /orgs/{organization}/servers/{server}/services/nginx/actions` |
 | `create_servers_services_postgres_actions` | `POST /orgs/{organization}/servers/{server}/services/postgres/actions` |
@@ -63,6 +82,15 @@ counterpart in the API, so a mistake is not trivially reversible.
 | `create_servers_services_mysql_actions` | `POST /orgs/{organization}/servers/{server}/services/mysql/actions` |
 | `create_servers_services_php_actions` | `POST /orgs/{organization}/servers/{server}/services/php/actions` |
 | `create_servers_services_supervisor_actions` | `POST /orgs/{organization}/servers/{server}/services/supervisor/actions` |
+| `delete_servers_php_opcache` | `DELETE /orgs/{organization}/servers/{server}/php/opcache` |
+| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` |
+| `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` |
+| `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` |
+| `delete_servers_sites_domains_certificates` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` |
+| `create_servers_sites_domains_certificates_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}/actions` |
+| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` |
+| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` |
+| `delete_teams_invites` | `DELETE /orgs/{organization}/teams/{team}/invites/{invitation}` |
 
 ## All tools by resource
 
@@ -76,7 +104,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/background-process
 | `create_servers_background_processes` | `POST /orgs/{organization}/servers/{server}/background-processes` | Create background process | async |
 | `get_servers_background_processes` | `GET /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Get background process | — |
 | `update_servers_background_processes` | `PUT /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Update background process | async |
-| `delete_servers_background_processes` | `DELETE /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Delete background process | async |
+| `delete_servers_background_processes` | `DELETE /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Delete background process | **confirm**, async |
 | `get_servers_background_processes_log` | `GET /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/log` | Get background process log | — |
 
 ### Backups
@@ -145,7 +173,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/deployments
 | `get_servers_sites_deployments_deploy_hook` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Get the deployment trigger URL | — |
 | `update_servers_sites_deployments_deploy_hook` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Update deployment trigger URL | — |
 | `create_servers_sites_deployments_push_to_deploy` | `POST /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` | Create push to deploy configuration | async |
-| `delete_servers_sites_deployments_push_to_deploy` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` | Delete push to deploy configuration | async |
+| `delete_servers_sites_deployments_push_to_deploy` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` | Delete push to deploy configuration | **confirm**, async |
 | `get_servers_sites_deployments` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/{deployment}` | Get deployment | — |
 | `get_servers_sites_deployments_log` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/{deployment}/log` | Get deployment output | — |
 | `get_servers_sites_deploy_key` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deploy-key` | Get deploy key | — |
@@ -161,7 +189,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/network
 | `list_servers_firewall_rules` | `GET /orgs/{organization}/servers/{server}/firewall-rules` | List server firewall rules | — |
 | `create_servers_firewall_rules` | `POST /orgs/{organization}/servers/{server}/firewall-rules` | Create server firewall rule | async |
 | `get_servers_firewall_rules` | `GET /orgs/{organization}/servers/{server}/firewall-rules/{rule}` | Get server firewall rule | — |
-| `delete_servers_firewall_rules` | `DELETE /orgs/{organization}/servers/{server}/firewall-rules/{rule}` | Delete server firewall rule | async |
+| `delete_servers_firewall_rules` | `DELETE /orgs/{organization}/servers/{server}/firewall-rules/{rule}` | Delete server firewall rule | **confirm**, async |
 
 ### Integrations
 
@@ -169,24 +197,24 @@ Forge documentation: https://forge.laravel.com/docs/resources/network
 | --- | --- | --- | --- |
 | `get_servers_sites_integrations_horizon` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` | Get Laravel Horizon integration status | — |
 | `create_servers_sites_integrations_horizon` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` | Create Laravel Horizon integration | async |
-| `delete_servers_sites_integrations_horizon` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` | Delete Laravel Horizon integration | async |
+| `delete_servers_sites_integrations_horizon` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` | Delete Laravel Horizon integration | **confirm**, async |
 | `get_servers_sites_integrations_octane` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/octane` | Get Laravel Octane integration status | — |
 | `create_servers_sites_integrations_octane` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/octane` | Create Laravel Octane integration | async |
-| `delete_servers_sites_integrations_octane` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/octane` | Delete Laravel Octane integration | async |
+| `delete_servers_sites_integrations_octane` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/octane` | Delete Laravel Octane integration | **confirm**, async |
 | `get_servers_sites_integrations_reverb` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/reverb` | Get Laravel Reverb integration status | — |
 | `create_servers_sites_integrations_reverb` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/reverb` | Create Laravel Reverb integration | async |
-| `delete_servers_sites_integrations_reverb` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/reverb` | Delete Laravel Reverb integration | async |
+| `delete_servers_sites_integrations_reverb` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/reverb` | Delete Laravel Reverb integration | **confirm**, async |
 | `get_servers_sites_integrations_inertia` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/inertia` | Get Inertia integration status | — |
 | `create_servers_sites_integrations_inertia` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/inertia` | Create Inertia integration | async |
 | `get_servers_sites_integrations_pulse` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` | Get Laravel Pulse integration status | — |
 | `create_servers_sites_integrations_pulse` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` | Create Laravel Pulse integration | async |
-| `delete_servers_sites_integrations_pulse` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` | Delete Laravel Pulse integration | async |
+| `delete_servers_sites_integrations_pulse` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` | Delete Laravel Pulse integration | **confirm**, async |
 | `get_servers_sites_integrations_laravel_maintenance` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Get Laravel Maintenance integration status | — |
-| `create_servers_sites_integrations_laravel_maintenance` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Create Laravel Maintenance integration | async |
+| `create_servers_sites_integrations_laravel_maintenance` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Create Laravel Maintenance integration | **confirm**, async |
 | `delete_servers_sites_integrations_laravel_maintenance` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Delete Laravel Maintenance integration | async |
 | `get_servers_sites_integrations_laravel_scheduler` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Get Laravel Scheduler integration job | — |
 | `create_servers_sites_integrations_laravel_scheduler` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Create Laravel Scheduler integration job | async |
-| `delete_servers_sites_integrations_laravel_scheduler` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Delete Laravel Scheduler integration job | async |
+| `delete_servers_sites_integrations_laravel_scheduler` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Delete Laravel Scheduler integration job | **confirm**, async |
 
 ### Logs
 
@@ -218,7 +246,7 @@ Forge documentation: https://forge.laravel.com/docs/servers/nginx-templates
 | `create_servers_nginx_templates` | `POST /orgs/{organization}/servers/{server}/nginx/templates` | Create Nginx template | — |
 | `get_servers_nginx_templates` | `GET /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` | Get Nginx template | — |
 | `update_servers_nginx_templates` | `PUT /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` | Update Nginx template | — |
-| `delete_servers_nginx_templates` | `DELETE /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` | Delete Nginx template | — |
+| `delete_servers_nginx_templates` | `DELETE /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` | Delete Nginx template | **confirm** |
 
 ### Organizations
 
@@ -265,7 +293,7 @@ Forge documentation: https://forge.laravel.com/docs/recipes
 | `get_recipes_runs` | `GET /orgs/{organization}/recipes/{recipe}/runs/{log}` | Get recipe run | — |
 | `list_teams_recipes` | `GET /orgs/{organization}/teams/{team}/recipes` | List team recipes | — |
 | `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` | Share recipe with the team | — |
-| `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` | Delete a recipe share | — |
+| `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` | Delete a recipe share | **confirm** |
 | `list_forge_recipes` | `GET /forge-recipes` | List Forge's recipes | — |
 | `get_forge_recipes` | `GET /forge-recipes/{forgeRecipe}` | Get Forge recipe | — |
 | `create_forge_recipes_runs` | `POST /forge-recipes/{forgeRecipe}/runs` | Create Forge recipe run | async |
@@ -279,7 +307,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | `list_servers_sites_redirect_rules` | `GET /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules` | List site redirect rules | — |
 | `create_servers_sites_redirect_rules` | `POST /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules` | Create site redirect rule | async |
 | `get_servers_sites_redirect_rules` | `GET /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules/{redirectRule}` | Get site redirect rule | — |
-| `delete_servers_sites_redirect_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules/{redirectRule}` | Delete site redirect rule | async |
+| `delete_servers_sites_redirect_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules/{redirectRule}` | Delete site redirect rule | **confirm**, async |
 
 ### Roles
 
@@ -292,7 +320,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | `list_roles` | `GET /orgs/{organization}/roles` | List roles | — |
 | `create_roles` | `POST /orgs/{organization}/roles` | Create role | — |
 | `get_roles` | `GET /orgs/{organization}/roles/{role}` | Get role | — |
-| `update_roles` | `PUT /orgs/{organization}/roles/{role}` | Update role | — |
+| `update_roles` | `PUT /orgs/{organization}/roles/{role}` | Update role | **confirm** |
 | `delete_roles` | `DELETE /orgs/{organization}/roles/{role}` | Delete role | **destructive** |
 | `list_roles_permissions` | `GET /orgs/{organization}/roles/{role}/permissions` | List role permissions | — |
 
@@ -318,12 +346,12 @@ Forge documentation: https://forge.laravel.com/docs/resources/scheduler
 | `list_servers_scheduled_jobs` | `GET /orgs/{organization}/servers/{server}/scheduled-jobs` | List server scheduled jobs | — |
 | `create_servers_scheduled_jobs` | `POST /orgs/{organization}/servers/{server}/scheduled-jobs` | Create scheduled job | async |
 | `get_servers_scheduled_jobs` | `GET /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` | Get scheduled job | — |
-| `delete_servers_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` | Delete scheduled job | async |
+| `delete_servers_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` | Delete scheduled job | **confirm**, async |
 | `get_servers_scheduled_jobs_outputs` | `GET /orgs/{organization}/servers/{server}/scheduled-jobs/{job}/output` | Get scheduled job output | — |
 | `list_servers_sites_scheduled_jobs` | `GET /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs` | List site scheduled jobs | — |
 | `create_servers_sites_scheduled_jobs` | `POST /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs` | Create site scheduled job | async |
 | `get_servers_sites_scheduled_jobs` | `GET /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` | Get site scheduled job | — |
-| `delete_servers_sites_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` | Delete site scheduled job | async |
+| `delete_servers_sites_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` | Delete site scheduled job | **confirm**, async |
 | `get_servers_sites_scheduled_jobs_outputs` | `GET /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}/output` | Get site scheduled job output | — |
 
 ### Security Rules
@@ -336,14 +364,14 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | `create_servers_sites_security_rules` | `POST /orgs/{organization}/servers/{server}/sites/{site}/security-rules` | Create site security rule | async |
 | `get_servers_sites_security_rules` | `GET /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Get site security rule | — |
 | `update_servers_sites_security_rules` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Update site security rule | async |
-| `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Delete site security rule | async |
+| `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Delete site security rule | **confirm**, async |
 
 ### Server Credentials
 
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_teams_server_credentials` | `GET /orgs/{organization}/teams/{team}/server-credentials` | List team server credentials | — |
-| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` | Create a new server credential share | — |
+| `create_teams_server_credentials` | `POST /orgs/{organization}/teams/{team}/server-credentials` | Create a new server credential share | **confirm** |
 | `delete_teams_server_credentials` | `DELETE /orgs/{organization}/teams/{team}/server-credentials/{credential}` | Delete a server credential share | **destructive** |
 
 ### Servers
@@ -355,9 +383,9 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `list_servers` | `GET /orgs/{organization}/servers` | List servers | — |
 | `create_servers` | `POST /orgs/{organization}/servers` | Create server | async |
 | `list_servers_archives` | `GET /orgs/{organization}/servers/archives` | List archived servers | — |
-| `create_servers_archives` | `POST /orgs/{organization}/servers/archives` | Create an archived server | async |
-| `delete_servers_archives` | `DELETE /orgs/{organization}/servers/archives/{server}` | Delete archived server | **destructive**, async |
-| `create_servers_background_processes_actions` | `POST /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/actions` | Perform an action on a server background process | async |
+| `create_servers_archives` | `POST /orgs/{organization}/servers/archives` | Create an archived server | **destructive**, async |
+| `delete_servers_archives` | `DELETE /orgs/{organization}/servers/archives/{server}` | Delete archived server | **confirm**, async |
+| `create_servers_background_processes_actions` | `POST /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/actions` | Perform an action on a server background process | **confirm**, async |
 | `create_servers_actions` | `POST /orgs/{organization}/servers/{server}/actions` | Create server action | **confirm**, async |
 | `create_servers_services_nginx_actions` | `POST /orgs/{organization}/servers/{server}/services/nginx/actions` | Perform Nginx action | **confirm**, async |
 | `create_servers_services_postgres_actions` | `POST /orgs/{organization}/servers/{server}/services/postgres/actions` | Perform Postgres action | **confirm**, async |
@@ -394,9 +422,9 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `update_servers_php_max_execution_time` | `PUT /orgs/{organization}/servers/{server}/php/max-execution-time` | Update server PHP max execution time | async |
 | `get_servers_php_opcache` | `GET /orgs/{organization}/servers/{server}/php/opcache` | Get server PHP OPcache status | — |
 | `create_servers_php_opcache` | `POST /orgs/{organization}/servers/{server}/php/opcache` | Create PHP OPcache config | async |
-| `delete_servers_php_opcache` | `DELETE /orgs/{organization}/servers/{server}/php/opcache` | Delete PHP OPcache config | async |
+| `delete_servers_php_opcache` | `DELETE /orgs/{organization}/servers/{server}/php/opcache` | Delete PHP OPcache config | **confirm**, async |
 | `list_teams_servers` | `GET /orgs/{organization}/teams/{team}/servers` | List team servers | — |
-| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` | Create a new server share | — |
+| `create_teams_servers` | `POST /orgs/{organization}/teams/{team}/servers` | Create a new server share | **confirm** |
 | `delete_teams_servers` | `DELETE /orgs/{organization}/teams/{team}/servers/{server}` | Delete a server share | **destructive** |
 
 ### Sites
@@ -418,9 +446,9 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `create_servers_sites_domains` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains` | Create domain | async |
 | `get_servers_sites_domains` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Get domain | — |
 | `update_servers_sites_domains` | `PATCH /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Update domain | async |
-| `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Delete domain | async |
+| `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Delete domain | **confirm**, async |
 | `servers_sites_domains_configurations` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/configurations` | Get domain DNS configuration | — |
-| `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` | Create domain action | async |
+| `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` | Create domain action | **confirm**, async |
 | `get_servers_sites_domains_nginx` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Get domain Nginx configuration | — |
 | `update_servers_sites_domains_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Update domain Nginx configuration | async |
 | `get_servers_sites_domains_certificate` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificate` | Get active domain certificate | — |
@@ -428,8 +456,8 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `create_servers_sites_domains_certificates` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates` | Create domain certificate | async |
 | `servers_sites_domains_certificates_active` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/active` | Get active domain certificate | — |
 | `get_servers_sites_domains_certificates` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` | Get domain certificate | — |
-| `delete_servers_sites_domains_certificates` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` | Delete domain certificate | async |
-| `create_servers_sites_domains_certificates_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}/actions` | Create domain certificate action | async |
+| `delete_servers_sites_domains_certificates` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` | Delete domain certificate | **confirm**, async |
+| `create_servers_sites_domains_certificates_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}/actions` | Create domain certificate action | **confirm**, async |
 | `get_servers_sites_healthcheck` | `GET /orgs/{organization}/servers/{server}/sites/{site}/healthcheck` | Get healthcheck endpoint | — |
 | `update_servers_sites_healthcheck` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/healthcheck` | Update healthcheck endpoint | — |
 | `get_servers_sites_environment` | `GET /orgs/{organization}/servers/{server}/sites/{site}/environment` | Get .env content | — |
@@ -485,12 +513,12 @@ Forge documentation: https://forge.laravel.com/docs/teams
 | `delete_teams` | `DELETE /orgs/{organization}/teams/{team}` | Delete team | **destructive** |
 | `list_teams_members` | `GET /orgs/{organization}/teams/{team}/members` | List team members | — |
 | `get_teams_members` | `GET /orgs/{organization}/teams/{team}/members/{user}` | Get team member | — |
-| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` | Update team member | — |
+| `update_teams_members` | `PUT /orgs/{organization}/teams/{team}/members/{user}` | Update team member | **confirm** |
 | `delete_teams_members` | `DELETE /orgs/{organization}/teams/{team}/members/{user}` | Delete team member | **destructive** |
 | `list_teams_invites` | `GET /orgs/{organization}/teams/{team}/invites` | List team invitations | — |
-| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` | Create team invite | async |
+| `create_teams_invites` | `POST /orgs/{organization}/teams/{team}/invites` | Create team invite | **confirm**, async |
 | `get_teams_invites` | `GET /orgs/{organization}/teams/{team}/invites/{invitation}` | Get team invitation | — |
-| `delete_teams_invites` | `DELETE /orgs/{organization}/teams/{team}/invites/{invitation}` | Delete team invitation | — |
+| `delete_teams_invites` | `DELETE /orgs/{organization}/teams/{team}/invites/{invitation}` | Delete team invitation | **confirm** |
 
 ### User
 
