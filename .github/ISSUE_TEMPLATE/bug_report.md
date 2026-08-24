@@ -17,6 +17,7 @@ labels: bug
 **Forge endpoint involved** (e.g. `GET /orgs/{organization}/servers/{server}`)
 
 **Environment**
+
 - laravel-forge-mcp version:
 - Node version:
 - MCP client (Claude Desktop, Claude Code, other):
