@@ -1,0 +1,74 @@
+{
+  "name": "laravel-forge-mcp",
+  "version": "0.1.0",
+  "description": "A complete Model Context Protocol server for the Laravel Forge API \u2014 every documented endpoint, with guarded destructive operations.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "laravel",
+    "forge",
+    "laravel-forge",
+    "devops",
+    "claude"
+  ],
+  "license": "MIT",
+  "author": "Marc Gratch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mgratch/laravel-forge-mcp.git"
+  },
+  "homepage": "https://github.com/mgratch/laravel-forge-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/mgratch/laravel-forge-mcp/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "laravel-forge-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "spec/forge.openapi.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/index.ts",
+    "generate": "tsx scripts/generate-operations.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "check": "npm run format && npm run lint && npm run typecheck && npm run test",
+    "prepublishOnly": "npm run build",
+    "docs": "tsx scripts/generate-docs.ts",
+    "refresh-spec": "tsx scripts/refresh-spec.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,9 +1,307 @@
 # laravel-forge-mcp
 
-A Model Context Protocol server for the [Laravel Forge API](https://forge.laravel.com/docs/api-reference/introduction).
+A [Model Context Protocol](https://modelcontextprotocol.io) server for the
+[Laravel Forge API](https://forge.laravel.com/docs/api-reference/introduction) — complete coverage
+of all **273 documented operations**, with destructive operations gated behind an explicit opt-in
+and a per-call confirmation.
 
-Implementation in progress.
+Every tool is generated from Forge's own [OpenAPI document](https://forge.laravel.com/api/docs.openapi),
+so the tool surface cannot silently drift from the API.
+
+> **Built against the current API, not the deprecated one.** Forge's legacy
+> `/api/v1` API is [deprecated and shuts down on 31 August 2026](https://forge.laravel.com/api-documentation).
+> This server targets the current API at `https://forge.laravel.com/api`.
+
+## Install
+
+```bash
+npm install -g laravel-forge-mcp
+```
+
+Or run without installing:
+
+```bash
+npx laravel-forge-mcp
+```
+
+## Configure
+
+Generate a token at [forge.laravel.com/profile/api](https://forge.laravel.com/profile/api).
+
+### Claude Desktop / Claude Code
+
+```jsonc
+{
+  "mcpServers": {
+    "forge": {
+      "command": "npx",
+      "args": ["-y", "laravel-forge-mcp"],
+      "env": {
+        "FORGE_API_KEY": "your-token",
+        "FORGE_ORGANIZATION": "your-org-slug"
+      }
+    }
+  }
+}
+```
+
+### Environment variables
+
+| Variable                      | Required | Default                         | Purpose                                                                                                                               |
+| ----------------------------- | -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `FORGE_API_KEY`               | yes      | —                               | API token.                                                                                                                            |
+| `FORGE_ORGANIZATION`          | no       | —                               | Organization **slug**. When set, `organization` disappears from every tool signature and is injected server-side.                     |
+| `FORGE_MCP_ALLOW_DESTRUCTIVE` | no       | unset                           | Set to exactly `1` to register destructive tools. They still require `confirm`. Any other value is rejected as a configuration error. |
+| `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                                    |
+| `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                                                  |
+| `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                                             |
+| `FORGE_POLL_TIMEOUT_MS`       | no       | per operation                   | Overrides the polling budget. Defaults to 30 min for server provisioning, 2 min elsewhere.                                            |
+| `FORGE_POLL_INTERVAL_MS`      | no       | per operation                   | Overrides the initial polling interval.                                                                                               |
+
+## Safety model
+
+Forge's API can destroy production infrastructure. This server treats that as a design constraint
+rather than a disclaimer.
+
+Arguments are validated against each tool's advertised JSON Schema **before** the confirmation
+guard and before any network call, so an unknown or malformed argument fails with a clear message
+and issues no request.
+
+**Two independent gates protect destructive operations:**
+
+1. **Registration.** Tools that delete infrastructure, irreversibly remove data, or execute
+   caller-authored code are not registered at all unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`. An agent
+   cannot call — or even see — a tool that is switched off.
+
+   Execution counts as destructive here, because it subsumes deletion. `POST .../sites/commands`
+   takes an unconstrained shell string; a custom recipe is an arbitrary script run on
+   caller-selected servers; a background process and a scheduled job each take a command plus the
+   user to run it as, `root` included; a background-process update takes raw Supervisor config,
+   which replaces the command; and installing an SSH key hands its holder persistent shell access.
+   Any of them can reproduce the consequence of every tool the switch hides, so classifying by
+   HTTP verb would have left `rm -rf` one unguarded `POST` away.
+
+2. **Targeted confirmation.** When enabled, each still requires a `confirm` argument that names the
+   operation _and its target_:
+
+   ```jsonc
+   { "server": 12345, "confirm": "delete_servers server=12345" }
+   ```
+
+   The phrase names the **tool**, its **target ids**, and any **effect-changing
+   field** such as `action` — because seven guarded routes share the shape
+   `POST /orgs/{org}/servers/{server}/…`, and one route serves both "reboot
+   nginx" and "stop nginx".
+
+   Targets carried in the **request body** are bound too. Archiving a server
+   takes `server_id` in the body rather than the path, so its phrase is
+   `create_servers_archives server_id=12345` — without that, one confirmation
+   would archive any server. Generation refuses to run if a guarded operation
+   has no target bound into its phrase.
+
+   Where the body determines the effect, the phrase binds the **whole body** by digest:
+
+   ```jsonc
+   // requires FORGE_MCP_ALLOW_DESTRUCTIVE=1 — running a command is destructive
+   {
+     "server": 12345, "site": 67890,
+     "command": "php artisan migrate --force",
+     "confirm": "create_servers_sites_commands server=12345 site=67890 body=sha256:cc281c7bca6feeaf"
+   }
+   ```
+
+   Approving "run a command" would mean nothing if the command could change between the approval
+   and the request, and echoing the payload is not an option — a deployment script is unreadable
+   and a `.env` is secret by definition. The digest is the first 16 hex characters of the SHA-256
+   of the canonical JSON body, so every field is bound, including ones a future spec adds.
+
+   Binding a hand-picked list of fields would leave gaps: a recipe approved to run as `forge` could
+   be sent as `root` if only its script were bound. If the phrase does not match the body about to
+   be sent, no request is made.
+
+   A generic `"yes"` is refused, and so is a phrase naming a different server — so a model cannot
+   satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.
+   The request is never sent if the phrase does not match.
+
+   When `FORGE_ORGANIZATION` is **not** pinned the phrase also carries the organization, because
+   Forge ids are scoped per organization and a phrase without it would authorise the same id in any
+   organization the token can reach. When it **is** pinned, the value is server-controlled: passing
+   `organization` yourself is rejected rather than honoured.
+
+**Confirmation also covers non-deletions that can take a site down.** Service actions are the
+clearest case: the API exposes `stop` for nginx but has no `start`, so a careless stop has no
+documented way back.
+
+Classification lives in `scripts/generate-operations.ts` and is keyed by `operationId`. It is
+decided by consequence, not HTTP verb — `DELETE .../deployments/status` merely clears a stuck
+deployment flag and is not guarded, while `DELETE .../servers/{server}` destroys a machine and is.
+If Forge renames an operation, generation **fails loudly** rather than silently un-guarding a tool.
+
+See [`docs/TOOLS.md`](docs/TOOLS.md) for the full catalog, including which tools are gated.
+
+## What the client handles for you
+
+| Concern                                                                          | Behaviour                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                                                                                                                                                               |
+| [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations are marked asynchronous; 98 answer `202 Accepted` and seven complete inline with a 200 or 204. `wait: true` is advertised only where the spec shows a way to observe completion _and_ to prove the call took effect, so no tool promises a wait it cannot perform. |
+| [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                                                                                                                                                              |
+| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                                                                                                                                                                     |
+| Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.                                                                                                                                                    |
+| Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                                                                                                                                                                |
+
+## Examples
+
+Read a site's live nginx configuration:
+
+```jsonc
+// tool: get_servers_sites_nginx
+{ "server": 12345, "site": 67890 }
+```
+
+Update it, then restart nginx (note the confirmation):
+
+```jsonc
+// tool: update_servers_sites_nginx — confirmation-gated, because the API has no
+// validation step and a bad write can take the site down
+{
+  "server": 12345,
+  "site": 67890,
+  "config": "server {\n  client_max_body_size 30M;\n  …\n}",
+  "confirm": "update_servers_sites_nginx server=12345 site=67890"
+}
+
+// tool: create_servers_services_nginx_actions — `action` is part of the phrase,
+// so a confirmation for a reboot cannot authorise a stop
+{
+  "server": 12345,
+  "action": "reboot",
+  "confirm": "create_servers_services_nginx_actions server=12345 action=reboot"
+}
+```
+
+> The current API has **no `nginx -t` equivalent**. A bad configuration write returns `202` and can
+> take a site down. Read the existing config first, change one thing, and verify the site still
+> serves afterwards.
+
+Deploy and wait for the result:
+
+```jsonc
+// tool: create_servers_sites_deployments
+{ "server": 12345, "site": 67890 }
+// then poll: get_servers_sites_deployments_status
+```
+
+`wait: true` is offered only where the OpenAPI document shows a way to observe
+completion — 40 of the API's 105 asynchronous operations. The generator emits a
+per-operation plan naming the path to read, the placeholder the created
+resource's id fills, and how completion is recognised:
+
+| Mode        | Recognised by                                                       | Example                                               |
+| ----------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
+| `status`    | the resource's `status`/`state` leaving that resource's pending set | a deployment reaching `finished`                      |
+| `absence`   | the item route answering 404                                        | deleting a background process                         |
+| `readiness` | `is_ready` turning true                                             | provisioning a server, which reports no status at all |
+
+Status vocabularies are per resource because Forge reuses the strings: `running`
+is the healthy steady state of a background process but an in-flight command.
+
+A `202` only says Forge accepted the work, so polling a resource that already
+existed can read its _pre-operation_ state and mistake it for completion —
+enabling maintenance mode reads `enabled: false` before it reads `enabling`. A
+status plan therefore either targets a resource the call created, or carries a
+postcondition proving the call landed. Operations with neither do not offer
+`wait` at all; they tell you what to re-read instead of pretending to wait.
+
+Budgets are per operation. Server provisioning gets thirty minutes and backs off
+to a two-minute cadence, matching Forge's own guidance; everything else gets two
+minutes. `FORGE_POLL_TIMEOUT_MS` and `FORGE_POLL_INTERVAL_MS` override both.
+
+Run a command and collect its output:
+
+```jsonc
+// tool: create_servers_sites_commands — destructive, so it needs
+// FORGE_MCP_ALLOW_DESTRUCTIVE=1 plus a body-bound confirmation
+{
+  "server": 12345, "site": 67890,
+  "command": "php artisan migrate --force",
+  "confirm": "create_servers_sites_commands server=12345 site=67890 body=sha256:cc281c7bca6feeaf"
+}
+// then: get_servers_sites_commands_output with the returned command id
+```
+
+## Known API quirks this server works around
+
+Documented here because they will otherwise cost you an afternoon:
+
+- **Read and write field names differ on config endpoints.** nginx reads `content` but writes
+  `config`; the environment file reads `content` but writes `environment`; FPM config reads
+  `configuration` but writes `config`. The generated schemas reflect the write shape, which is what
+  a tool call needs.
+- **Two incompatible PHP version enums.** Service actions and version installs take `php83`;
+  `cli-version` and `site-version` take `8.3`.
+- **`{phpVersion}` in a path is an integer resource id**, not a version string. List the versions
+  first to resolve it.
+- **Whole-file writes, never patches.** nginx, environment and FPM configs replace the entire file.
+  Read, modify, then write — and be aware that concurrent edits will silently clobber each other.
+- **No total count in list responses.** Cursor pagination only.
+
+## Development
+
+```bash
+npm install
+npm run generate   # rebuild src/generated/operations.ts from spec/forge.openapi.json
+npm run docs       # rebuild docs/TOOLS.md
+npm run check      # format + lint + typecheck + test
+npm run build
+```
+
+### Updating to a newer Forge API
+
+```bash
+npm run refresh-spec
+npm run check
+```
+
+`refresh-spec` is the whole pipeline: it downloads the document, validates it, replaces
+`spec/forge.openapi.json` atomically so a failed download cannot leave a truncated spec behind, then
+regenerates the operation table and `docs/TOOLS.md`. Do not hand-roll the `curl` — that skips the
+validation and the atomic write.
+
+It fails closed, on purpose, rather than shipping something unsafe or unpollable:
+
+| Failure               | Meaning                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| unclassified mutation | a new mutating operation is in neither the destructive nor the reviewed-safe table |
+| unknown `operationId` | a guarded operation was renamed or removed                                         |
+| unbound confirmation  | a guarded operation has no target to name in its confirmation phrase               |
+| unclassified status   | a resource gained a status value that is neither pending nor terminal              |
+| stale postcondition   | a polling postcondition names a field the resource no longer declares              |
+
+Each one wants a human to re-check a safety or correctness classification. CI also fails when the
+committed generated files are stale.
+
+### Architecture
+
+```
+spec/forge.openapi.json      vendored API contract (the source of truth)
+scripts/generate-operations  spec -> typed operation descriptors + safety flags
+scripts/generate-docs        descriptors -> docs/TOOLS.md
+src/client/                  HTTP, auth, rate limiting, retries, JSON:API, polling
+src/tools/schema.ts          OpenAPI schema -> MCP inputSchema
+src/tools/registry.ts        descriptor -> registered tool (guards, paths, body, polling)
+src/server.ts                MCP wiring: tools/list, tools/call, error mapping
+```
+
+## Contributing
+
+Issues and pull requests welcome. Please run `npm run check` before opening a PR — CI runs the same
+commands on Node 22 and 24, and additionally verifies that generated files are current.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Acknowledgements
+
+Not affiliated with or endorsed by Laravel. "Laravel" and "Forge" are trademarks of Laravel LLC.
