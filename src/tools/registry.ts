@@ -8,7 +8,7 @@
  */
 
 import type { ForgeClient } from '../client/http.js';
-import { ForgeConfirmationError } from '../client/errors.js';
+import { ForgeApiError, ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
 import { pollUntilTerminal } from '../client/polling.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
@@ -365,11 +365,41 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
   // Poll the resource's own URL. A `self` link from the response is
   // authoritative; otherwise the request path already addresses it.
   const selfLink = extractSelfLink(response.data);
+
+  // A create posted to a collection: the created resource is only addressable
+  // through the link the API returned. Falling back to the request path would
+  // poll the collection, which is a list with no status and would look
+  // instantly finished.
+  if (descriptor.method === 'POST' && selfLink === undefined) {
+    return {
+      status: response.status,
+      accepted: response.accepted,
+      data: response.data,
+      ...(response.included === undefined ? {} : { included: response.included }),
+      ...(response.links === undefined ? {} : { links: response.links }),
+      note:
+        'Forge accepted the request but returned no self link, so the new resource could not be ' +
+        'polled. Read it back from its collection to observe completion.',
+    };
+  }
+
   const pollPath = selfLink ?? path;
 
+  // A deletion finishes when the resource stops existing, so its final read is
+  // a 404. Treating that as an error would report a successful delete as a
+  // failure — and 19 of the pollable operations are deletions.
+  const treat404AsDone = descriptor.method === 'DELETE';
+
   const polled = await pollUntilTerminal(async () => {
-    const read = await client.request({ method: 'GET', path: pollPath, query: {} });
-    return read.data;
+    try {
+      const read = await client.request({ method: 'GET', path: pollPath, query: {} });
+      return read.data;
+    } catch (error) {
+      if (treat404AsDone && error instanceof ForgeApiError && error.status === 404) {
+        return { status: 'deleted' };
+      }
+      throw error;
+    }
   });
 
   return {

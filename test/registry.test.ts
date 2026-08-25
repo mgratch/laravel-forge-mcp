@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ForgeConfirmationError } from '../src/client/errors.js';
+import { ForgeApiError, ForgeConfirmationError } from '../src/client/errors.js';
 import { ForgeValidationError } from '../src/tools/validate.js';
 import { ForgeClient } from '../src/client/http.js';
 import { RateLimiter } from '../src/client/rate-limit.js';
@@ -530,5 +530,126 @@ describe('tool metadata', () => {
       expect(tool.inputSchema['type']).toBe('object');
       expect(tool.inputSchema['properties']).toBeTypeOf('object');
     }
+  });
+});
+
+describe('polling a deletion', () => {
+  it('treats the final 404 as completion rather than an error', async () => {
+    // 19 pollable operations are deletions; their last read is necessarily a
+    // 404, and reporting that as a failure would misdescribe a success.
+    const stub = stubFetch([
+      { status: 202 },
+      { body: jsonApiResource('firewallRules', 1, { status: 'removing' }) },
+      { status: 404, body: { message: 'Not found.' } },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['delete_servers_firewall_rules'],
+    });
+    const tool = tools.find((c) => c.name === 'delete_servers_firewall_rules');
+    if (!tool) return;
+
+    const result = (await tool.handler({
+      server: 1,
+      rule: 2,
+      wait: true,
+      confirm: 'delete_servers_firewall_rules server=1 rule=2',
+    })) as Record<string, unknown>;
+
+    const polled = result['polled'] as Record<string, unknown>;
+    expect(polled['status']).toBe('deleted');
+  }, 20_000);
+
+  it('still surfaces a non-404 failure while polling a deletion', async () => {
+    const stub = stubFetch([
+      { status: 202 },
+      { status: 500, body: { message: 'boom' } },
+      { status: 500, body: { message: 'boom' } },
+      { status: 500, body: { message: 'boom' } },
+      { status: 500, body: { message: 'boom' } },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['delete_servers_firewall_rules'],
+    });
+    const tool = tools.find((c) => c.name === 'delete_servers_firewall_rules');
+    if (!tool) return;
+
+    await expect(
+      tool.handler({
+        server: 1,
+        rule: 2,
+        wait: true,
+        confirm: 'delete_servers_firewall_rules server=1 rule=2',
+      }),
+    ).rejects.toThrow(ForgeApiError);
+  }, 20_000);
+});
+
+describe('polling a create', () => {
+  it('follows the response self link rather than the collection', async () => {
+    const stub = stubFetch([
+      {
+        status: 202,
+        body: {
+          data: {
+            id: '7',
+            type: 'backgroundProcesses',
+            attributes: { status: 'installing' },
+            links: { self: '/api/orgs/acme/servers/1/background-processes/7' },
+          },
+        },
+      },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'running' }) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'active' }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = tools.find((c) => c.name === 'create_servers_background_processes');
+    if (!tool) return;
+
+    await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    });
+
+    // The prefix must be applied exactly once, not doubled.
+    const pollUrl = stub.requests[1]?.url ?? '';
+    expect(pollUrl).toBe(
+      'https://forge.laravel.com/api/orgs/acme/servers/1/background-processes/7',
+    );
+  }, 20_000);
+
+  it('says so when a create returns no self link, instead of polling a collection', async () => {
+    const stub = stubFetch([{ status: 202 }]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = tools.find((c) => c.name === 'create_servers_background_processes');
+    if (!tool) return;
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect(String(result['note'])).toContain('no self link');
+    // One request only: it must not have polled the collection.
+    expect(stub.requests).toHaveLength(1);
   });
 });

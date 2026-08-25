@@ -385,10 +385,24 @@ function collectArgumentNames(
  */
 function isPollable(
   path: string,
+  method: string,
   document: OpenApiDocument,
   schemas: Record<string, unknown>,
 ): boolean {
-  const getOperation = document.paths[path]?.['get'];
+  // A create posts to a collection, so the collection's own GET describes a
+  // list and never carries a status. What matters is whether the *created*
+  // resource is pollable, which is the item route: the same path plus an id
+  // segment. The runtime reaches it through the response's `self` link.
+  const readPath =
+    method === 'post'
+      ? (Object.keys(document.paths).find(
+          (candidate) =>
+            candidate.startsWith(`${path}/{`) &&
+            candidate.slice(path.length + 1).split('/').length === 1,
+        ) ?? path)
+      : path;
+
+  const getOperation = document.paths[readPath]?.['get'];
   if (!getOperation) return false;
 
   const responses: Record<string, unknown> = getOperation.responses ?? {};
@@ -603,7 +617,7 @@ function main(): void {
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
           `    confirmationTargetFields: ${JSON.stringify(targetFields)},`,
-          `    pollable: ${isPollable(path, spec, schemaComponents)},`,
+          `    pollable: ${isPollable(path, method, spec, schemaComponents)},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,
           '  },',
