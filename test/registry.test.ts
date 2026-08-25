@@ -4,7 +4,7 @@ import { ForgeApiError, ForgeConfirmationError } from '../src/client/errors.js';
 import { ForgeValidationError } from '../src/tools/validate.js';
 import { ForgeClient } from '../src/client/http.js';
 import { RateLimiter } from '../src/client/rate-limit.js';
-import { OPERATIONS } from '../src/generated/operations.js';
+import { OPERATIONS, PENDING_STATUSES } from '../src/generated/operations.js';
 import { buildConfirmationPhrase, buildToolRegistry, renderPath } from '../src/tools/registry.js';
 import type { OperationDescriptor } from '../src/tools/types.js';
 import { instantSleep, jsonApiResource, loadSpecSchemas, stubFetch } from './helpers.js';
@@ -375,7 +375,8 @@ describe('async operations', () => {
       (tool.inputSchema['properties'] as Record<string, unknown>)['wait'] !== undefined;
 
     for (const tool of tools) {
-      const expected = tool.descriptor.processingMode === 'async' && tool.descriptor.pollable;
+      const expected =
+        tool.descriptor.processingMode === 'async' && tool.descriptor.polling !== undefined;
       expect(hasWait(tool), `${tool.name} wait mismatch`).toBe(expected);
     }
   });
@@ -628,30 +629,6 @@ describe('polling a create', () => {
       'https://forge.laravel.com/api/orgs/acme/servers/1/background-processes/7',
     );
   }, 20_000);
-
-  it('says so when a create returns no self link, instead of polling a collection', async () => {
-    const stub = stubFetch([{ status: 202 }]);
-
-    const tools = makeRegistry(stub, {
-      organization: 'acme',
-      only: ['create_servers_background_processes'],
-    });
-    const tool = tools.find((c) => c.name === 'create_servers_background_processes');
-    if (!tool) return;
-
-    const result = (await tool.handler({
-      server: 1,
-      name: 'worker',
-      command: 'php artisan queue:work',
-      user: 'forge',
-      processes: 1,
-      wait: true,
-    })) as Record<string, unknown>;
-
-    expect(String(result['note'])).toContain('no self link');
-    // One request only: it must not have polled the collection.
-    expect(stub.requests).toHaveLength(1);
-  });
 });
 
 describe('polled response integrity', () => {
@@ -701,23 +678,279 @@ describe('polled response integrity', () => {
   }, 20_000);
 
   it('tells a non-pollable async caller what to read instead of offering wait', async () => {
+    // Pick a real operation the generator classified as non-pollable, so the
+    // branch under test is the one the shipped catalog actually reaches. A
+    // guard that skips when the chosen operation turns out to be pollable would
+    // silently assert nothing.
+    const nonPollable = OPERATIONS.find(
+      (op) => op.processingMode === 'async' && op.polling === undefined && !op.destructive,
+    );
+    expect(nonPollable, 'no non-pollable async operation in the catalog').toBeDefined();
+
     const stub = stubFetch([{ status: 202 }]);
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: [(nonPollable as OperationDescriptor).name],
+    });
+    const tool = findTool(tools, (nonPollable as OperationDescriptor).name);
+
+    const args: Record<string, unknown> = {};
+    for (const param of tool.descriptor.pathParams) {
+      if (param.name !== 'organization') args[param.name] = 1;
+    }
+
+    const result = (await tool.handler(args)) as Record<string, unknown>;
+
+    const note = String(result['note']);
+    expect(note).toContain('no route to poll');
+    expect(note).not.toContain('wait: true');
+  });
+});
+
+describe('per-resource terminal semantics', () => {
+  // Forge reuses status strings with different meanings. `running` is the
+  // healthy steady state of a background process but an in-flight command, so
+  // a single global vocabulary is wrong in both directions.
+
+  it('treats a background process reporting running as finished', async () => {
+    const stub = stubFetch([
+      { status: 202, body: jsonApiResource('backgroundProcesses', 7, {}) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'running' }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'create_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect((result['polled'] as Record<string, unknown>)['status']).toBe('running');
+    // One create plus exactly one read: `running` settled immediately.
+    expect(stub.requests).toHaveLength(2);
+  }, 20_000);
+
+  it('keeps polling a background process through starting and stopping', async () => {
+    const stub = stubFetch([
+      { status: 202, body: jsonApiResource('backgroundProcesses', 7, {}) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'starting' }) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'stopping' }) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'stopped' }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'create_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect((result['polled'] as Record<string, unknown>)['status']).toBe('stopped');
+    expect(stub.requests).toHaveLength(4);
+  }, 20_000);
+
+  it('keeps polling a command that reports running until it finishes', async () => {
+    const stub = stubFetch([
+      { status: 202, body: jsonApiResource('commands', 3, {}) },
+      { body: jsonApiResource('commands', 3, { status: 'running' }) },
+      { body: jsonApiResource('commands', 3, { status: 'finished' }) },
+    ]);
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
       only: ['create_servers_sites_commands'],
     });
-    const tool = tools.find((c) => c.name === 'create_servers_sites_commands');
-    if (!tool || tool.descriptor.pollable) return;
+    const tool = findTool(tools, 'create_servers_sites_commands');
 
     const result = (await tool.handler({
       server: 1,
       site: 2,
       command: 'php artisan migrate --force',
+      wait: true,
     })) as Record<string, unknown>;
 
-    const note = String(result['note']);
-    expect(note).toContain('no route to poll');
-    expect(note).not.toContain('wait: true');
+    expect((result['polled'] as Record<string, unknown>)['status']).toBe('finished');
+    expect(stub.requests).toHaveLength(3);
+  }, 20_000);
+
+  it('gives the two resources opposite verdicts on the same status string', () => {
+    expect(PENDING_STATUSES['backgroundProcesses']).not.toContain('running');
+    expect(PENDING_STATUSES['commands']).toContain('running');
+  });
+});
+
+describe('polling plans', () => {
+  it('reaches a created resource through the generated item route when Forge omits a self link', async () => {
+    // `BackgroundProcessResource` requires only `id` and `type`, so a valid 202
+    // can carry an id with no `links.self`. The plan's read-path template plus
+    // that id still addresses it.
+    const stub = stubFetch([
+      { status: 202, body: { data: { id: '42', type: 'backgroundProcesses' } } },
+      { body: jsonApiResource('backgroundProcesses', 42, { status: 'running' }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'create_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect(stub.requests[1]?.url).toContain('/servers/1/background-processes/42');
+    expect((result['polled'] as Record<string, unknown>)['status']).toBe('running');
+  }, 20_000);
+
+  it('reports what it could not poll when neither a self link nor an id comes back', async () => {
+    const stub = stubFetch([{ status: 202 }]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'create_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect(String(result['note'])).toContain('neither a self link nor a resource id');
+    expect(stub.requests).toHaveLength(1);
+  });
+
+  it('polls an async deletion until the resource is gone', async () => {
+    const stub = stubFetch([
+      { status: 202 },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'removing' }) },
+      { status: 404, body: { errors: [{ title: 'Not Found' }] } },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['delete_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'delete_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      backgroundProcess: 7,
+      confirm: 'delete_servers_background_processes server=1 backgroundProcess=7',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect((result['polled'] as Record<string, unknown>)['completion']).toBe('absence');
+    expect(stub.requests).toHaveLength(3);
+  }, 20_000);
+
+  it('does not treat a statusless read as a completed deletion', async () => {
+    // A deleted resource that still answers 200 has not gone anywhere. Under
+    // the status vocabulary a missing status means "nothing to wait for", which
+    // is the opposite of what it means here.
+    const stub = stubFetch([
+      { status: 202 },
+      { body: jsonApiResource('keys', 9, {}) },
+      { status: 404, body: { errors: [{ title: 'Not Found' }] } },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['delete_servers_ssh_keys'],
+    });
+    const tool = findTool(tools, 'delete_servers_ssh_keys');
+
+    await tool.handler({
+      server: 1,
+      key: 9,
+      confirm: 'delete_servers_ssh_keys server=1 key=9',
+      wait: true,
+    });
+
+    expect(stub.requests).toHaveLength(3);
+  }, 20_000);
+
+  it('generates absence plans only for item routes, never for state-clearing endpoints', () => {
+    // `DELETE .../deployments/status` clears a stuck flag on an endpoint that
+    // keeps answering afterwards, so waiting for a 404 would hang until timeout.
+    const resetter = OPERATIONS.find(
+      (op) => op.operationId === 'organizations.servers.sites.deployments.status.destroy',
+    );
+
+    expect(resetter?.polling?.completion).not.toBe('absence');
+
+    for (const operation of OPERATIONS) {
+      if (operation.polling?.completion !== 'absence') continue;
+      expect(operation.polling.path.endsWith('}'), `${operation.name} is not an item route`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('waits for a provisioning server to report readiness', async () => {
+    const stub = stubFetch([
+      { status: 202, body: { data: { id: '55', type: 'servers' } } },
+      { body: jsonApiResource('servers', 55, { is_ready: false }) },
+      { body: jsonApiResource('servers', 55, { is_ready: true }) },
+    ]);
+
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['create_servers'] });
+    const tool = findTool(tools, 'create_servers');
+
+    const result = (await tool.handler({
+      name: 'web-1',
+      type: 'app',
+      provider: 'custom',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect((result['polled'] as Record<string, unknown>)['completion']).toBe('readiness');
+    expect(stub.requests).toHaveLength(3);
+    expect(stub.requests[2]?.url).toContain('/servers/55');
+  }, 20_000);
+
+  it('never points a polling plan at a collection', () => {
+    for (const operation of OPERATIONS) {
+      const plan = operation.polling;
+      if (!plan || operation.method !== 'POST') continue;
+
+      // A create either reads the item route below the collection it posted to,
+      // or an action endpoint that returns a single resource. Either way the
+      // read path must not be the collection itself.
+      const readsCollection = plan.path === operation.path && plan.idParam === undefined;
+      const isActionEndpoint = !operation.path.endsWith('s');
+
+      if (readsCollection) {
+        expect(isActionEndpoint, `${operation.name} polls its own collection`).toBe(true);
+      }
+    }
   });
 });

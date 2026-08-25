@@ -182,6 +182,76 @@ describe('generated operation table', () => {
     }
   });
 
+  it('fails closed on a resource status value it cannot classify', () => {
+    // An unclassified status would make polling either hang until timeout or
+    // report an in-flight operation as finished, depending on which way the
+    // default fell. Neither is acceptable silently.
+    const mutatedSpec = JSON.parse(readFileSync('./spec/forge.openapi.json', 'utf8')) as {
+      components: {
+        schemas: Record<
+          string,
+          { properties?: { attributes?: { properties?: Record<string, { enum?: string[] }> } } }
+        >;
+      };
+    };
+
+    const statusSchema =
+      mutatedSpec.components.schemas['BackgroundProcessResource']?.properties?.attributes
+        ?.properties?.['status'];
+    expect(statusSchema?.enum, 'spec no longer declares this enum').toBeDefined();
+    statusSchema?.enum?.push('hibernating');
+
+    const directory = mkdtempSync(join(tmpdir(), 'forge-mcp-spec-'));
+    const specPath = join(directory, 'forge.openapi.json');
+
+    try {
+      writeFileSync(specPath, JSON.stringify(mutatedSpec), 'utf8');
+
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', 'scripts/generate-operations.ts'],
+        { encoding: 'utf8', env: { ...process.env, FORGE_SPEC_PATH: specPath } },
+      );
+
+      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(result.status, `generator should have failed:\n${output}`).not.toBe(0);
+      expect(output).toContain('backgroundProcesses.hibernating');
+      expect(output).toContain('not classified');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('gives every pollable operation a plan it can actually execute', () => {
+    for (const operation of OPERATIONS) {
+      const plan = operation.polling;
+      if (!plan) continue;
+
+      // Only asynchronous operations are ever polled.
+      expect(operation.processingMode, `${operation.name}`).toBe('async');
+
+      // Every placeholder in the read path must be fillable: from the
+      // operation's own path parameters, or from the created resource's id.
+      const placeholders = [...plan.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
+      const available = new Set(operation.pathParams.map((param) => param.name));
+      if (plan.idParam !== undefined) available.add(plan.idParam);
+
+      for (const placeholder of placeholders) {
+        expect(
+          available.has(placeholder as string),
+          `${operation.name} cannot fill {${placeholder}}`,
+        ).toBe(true);
+      }
+
+      // An id placeholder is only meaningful when the read path declares it.
+      if (plan.idParam !== undefined) {
+        expect(placeholders, `${operation.name}`).toContain(plan.idParam);
+        expect(operation.method, `${operation.name}`).toBe('POST');
+      }
+    }
+  });
+
   it('requires confirmation for every destructive operation', () => {
     for (const operation of OPERATIONS.filter((candidate) => candidate.destructive)) {
       expect(operation.requiresConfirm, `${operation.name} is unguarded`).toBe(true);

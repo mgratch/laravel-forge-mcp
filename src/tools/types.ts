@@ -31,6 +31,50 @@ export interface OperationParameter {
 }
 
 /**
+ * How an asynchronous operation is observed reaching completion.
+ *
+ * `status` re-reads the resource until its `status`/`state` settles.
+ * `absence` re-reads it until the API answers 404, which is the only signal a
+ * deletion gives — several deletable Forge resources report no status at all.
+ * `readiness` waits for `is_ready`, which is how `ServerResource` — and so
+ * server provisioning, the longest-running operation in the API — reports
+ * completion, having no status field at all.
+ */
+export type PollCompletion = 'status' | 'absence' | 'readiness';
+
+/**
+ * Everything the runtime needs to poll one operation to completion.
+ *
+ * A plan rather than a boolean flag, because three things vary per operation
+ * and none of them can be recovered at runtime: which path reads the affected
+ * resource, which placeholder in that path the created resource's id fills, and
+ * whether completion means "settled" or "gone".
+ */
+export interface PollingPlan {
+  /** Read-path template, with `{param}` placeholders. */
+  readonly path: string;
+  /**
+   * Placeholder in `path` filled from the created resource's `data.id`.
+   *
+   * Set for creates, whose read path is the item route beneath the collection
+   * they posted to and therefore carries one placeholder the request itself
+   * never supplied. Forge does not always return a `self` link — a
+   * `BackgroundProcessResource`, for instance, requires only `id` and `type` —
+   * so rendering this template with the returned id is what makes the new
+   * resource addressable.
+   */
+  readonly idParam?: string;
+  readonly completion: PollCompletion;
+  /**
+   * JSON:API resource type, selecting the status vocabulary.
+   *
+   * `undefined` when the read path's response does not declare one, in which
+   * case the default vocabulary applies.
+   */
+  readonly resourceType?: string;
+}
+
+/**
  * One Forge API operation, flattened into everything the runtime needs to
  * expose it as a tool. Generated — see `scripts/generate-operations.ts`.
  */
@@ -74,13 +118,12 @@ export interface OperationDescriptor {
    */
   readonly confirmationTargetFields: readonly string[];
   /**
-   * Whether completion can actually be observed.
+   * How completion is observed, or `undefined` when it cannot be.
    *
-   * True only when the same path exposes a GET whose response carries a
-   * `status` or `state` field. Derived from the document rather than inferred
-   * from the HTTP method, which is wrong in both directions — see the generator.
+   * Derived from the document rather than inferred from the HTTP method, which
+   * is wrong in both directions — see the generator.
    */
-  readonly pollable: boolean;
+  readonly polling: PollingPlan | undefined;
   /**
    * Destroys infrastructure or irreversibly removes data. Registered only when
    * `FORGE_MCP_ALLOW_DESTRUCTIVE=1`.

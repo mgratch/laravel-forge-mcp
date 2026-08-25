@@ -373,76 +373,387 @@ function collectArgumentNames(
 }
 
 /**
- * Whether an asynchronous operation can actually be observed to completion.
+ * Statuses that mean "still working", classified by value.
  *
- * Derived from the document rather than inferred from the HTTP method: an
- * operation is pollable only when the same path exposes a GET whose response
- * carries a `status` or `state` field. Method-based inference gets this wrong in
- * both directions — `DELETE .../deployments/status` *resets* state rather than
- * removing a resource, so waiting for a 404 would hang, and an nginx config PUT
- * reads back content with no status at all, which a status poll would treat as
- * instantly finished.
+ * Forge has no single status vocabulary: the same string means different things
+ * on different resources. `running` is the healthy steady state of a background
+ * process but an in-flight `CommandStatus`, so one global set of non-terminal
+ * values is wrong in both directions — it polls a finished background process
+ * until timeout, and reports a still-executing command as finished.
+ *
+ * Classification therefore happens per value with per-resource overrides, and
+ * the generator fails closed on any enum value it cannot classify.
+ *
+ * @see https://forge.laravel.com/api/docs.openapi — `components.schemas.*Resource`
  */
-function isPollable(
+const PENDING_BY_VALUE: ReadonlySet<string> = new Set([
+  'connecting',
+  'creating',
+  'deleting',
+  'deploying',
+  'disabling',
+  'enabling',
+  'installing',
+  'pending',
+  'queued',
+  'removing',
+  'renewing',
+  'restarting',
+  'restoring',
+  'securing',
+  'starting',
+  'stopping',
+  'syncing',
+  'uninstalling',
+  'updating',
+  'waiting',
+]);
+
+/** Statuses that mean the operation has settled, successfully or not. */
+const TERMINAL_BY_VALUE: ReadonlySet<string> = new Set([
+  'backoff',
+  'beating',
+  'cancelled',
+  'deployed',
+  'disabled',
+  'enabled',
+  'exited',
+  'failed',
+  'failed-build',
+  'failed-runner',
+  'failed-unknown',
+  'fatal',
+  'finished',
+  'installed',
+  'maintenance',
+  'missing',
+  'never-deployed',
+  'running',
+  'stopped',
+  'success',
+  'timeout',
+  'unknown',
+]);
+
+/**
+ * Per-resource corrections to the value tables above.
+ *
+ * Each entry names a status whose meaning on that resource contradicts its
+ * usual one:
+ *
+ *   - `commands` / `recipeLogs` — `running` is in-flight here, not a steady
+ *     state, so polling must continue until `finished`.
+ *   - `heartbeats` — `pending` is the resting state of a heartbeat that has not
+ *     fired yet, not work in progress.
+ *   - `laravelMaintenanceIntegrations` — `MaintenanceModeStatus` has only
+ *     `enabling` and `disabling`, which name the mode rather than a transition;
+ *     treating them as in-flight would poll every toggle until timeout.
+ */
+const RESOURCE_STATUS_OVERRIDES: Readonly<
+  Record<string, Readonly<Record<string, 'pending' | 'terminal'>>>
+> = {
+  commands: { running: 'pending' },
+  recipeLogs: { running: 'pending' },
+  heartbeats: { pending: 'terminal' },
+  laravelMaintenanceIntegrations: { disabling: 'terminal', enabling: 'terminal' },
+};
+
+/** A resource's JSON:API `type` and the statuses that mean "keep polling". */
+interface ResourceVocabulary {
+  readonly resourceType: string;
+  readonly pending: readonly string[];
+}
+
+/** Resolves `$ref`, and `anyOf`/`oneOf` minus its null branch, to one schema. */
+function resolveSchema(node: unknown, schemas: Record<string, unknown>, depth = 0): unknown {
+  if (depth > 8 || typeof node !== 'object' || node === null) return node;
+  const record = node as Record<string, unknown>;
+
+  const ref = record['$ref'];
+  if (typeof ref === 'string') {
+    return resolveSchema(schemas[ref.replace('#/components/schemas/', '')], schemas, depth + 1);
+  }
+
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    const branches = record[key];
+    if (!Array.isArray(branches)) continue;
+
+    // `anyOf: [Enum, null]` is how Forge marks a nullable status.
+    const meaningful = branches.filter((branch) => {
+      const type = (branch as { type?: unknown }).type;
+      return type !== 'null';
+    });
+    if (meaningful.length === 1) return resolveSchema(meaningful[0], schemas, depth + 1);
+  }
+
+  return record;
+}
+
+/**
+ * Reads every resource schema's status vocabulary out of the document.
+ *
+ * A resource schema is recognised by a literal `type` enum — the JSON:API
+ * member that names the resource — plus a `status` or `state` attribute.
+ */
+function collectResourceVocabularies(
+  schemas: Record<string, unknown>,
+): Map<string, ResourceVocabulary> {
+  const byType = new Map<string, ResourceVocabulary>();
+  const unclassified: string[] = [];
+
+  for (const schema of Object.values(schemas)) {
+    if (typeof schema !== 'object' || schema === null) continue;
+    const properties = (schema as { properties?: Record<string, unknown> }).properties;
+    if (!properties) continue;
+
+    const typeEnum = (properties['type'] as { enum?: unknown[] } | undefined)?.enum;
+    const resourceType = typeEnum?.[0];
+    if (typeof resourceType !== 'string') continue;
+
+    const attributes = (properties['attributes'] as { properties?: Record<string, unknown> })
+      ?.properties;
+    if (!attributes) continue;
+
+    const statusSchema = resolveSchema(attributes['status'] ?? attributes['state'], schemas);
+    const values = (statusSchema as { enum?: unknown[] } | undefined)?.enum;
+    if (!Array.isArray(values)) continue;
+
+    const overrides = RESOURCE_STATUS_OVERRIDES[resourceType] ?? {};
+    const pending: string[] = [];
+
+    for (const raw of values) {
+      if (typeof raw !== 'string') continue;
+      const value = raw.toLowerCase();
+      const override = overrides[value];
+
+      if (override === 'pending') pending.push(value);
+      else if (override === 'terminal') continue;
+      else if (PENDING_BY_VALUE.has(value)) pending.push(value);
+      else if (TERMINAL_BY_VALUE.has(value)) continue;
+      else unclassified.push(`${resourceType}.${value}`);
+    }
+
+    byType.set(resourceType, { resourceType, pending });
+  }
+
+  if (unclassified.length > 0) {
+    throw new Error(
+      `${unclassified.length} resource status value(s) are not classified:\n` +
+        unclassified.map((entry) => `  - ${entry}`).join('\n') +
+        '\n\nAdd each to PENDING_BY_VALUE (work is still in flight) or ' +
+        'TERMINAL_BY_VALUE (the operation has settled) in ' +
+        'scripts/generate-operations.ts, or add a RESOURCE_STATUS_OVERRIDES entry ' +
+        'when the value means something different on that resource. Leaving it ' +
+        'unclassified would make polling either hang or finish early.',
+    );
+  }
+
+  // A stale override is worse than none: it silently contributes nothing while
+  // looking like the case is handled.
+  for (const resourceType of Object.keys(RESOURCE_STATUS_OVERRIDES)) {
+    if (!byType.has(resourceType)) {
+      throw new Error(
+        `RESOURCE_STATUS_OVERRIDES names resource type "${resourceType}", which no longer ` +
+          'declares a status enum in the Forge spec.',
+      );
+    }
+  }
+
+  for (const value of PENDING_BY_VALUE) {
+    if (TERMINAL_BY_VALUE.has(value)) {
+      throw new Error(`Status "${value}" is listed as both pending and terminal.`);
+    }
+  }
+
+  return byType;
+}
+
+/**
+ * The attribute Forge uses to signal that a provisioned resource is usable.
+ *
+ * `ServerResource` reports no `status`; provisioning finishes when `is_ready`
+ * flips to true, which is the only completion signal `POST /orgs/{org}/servers`
+ * — the longest-running operation in the API — ever gives.
+ */
+const READINESS_FIELD = 'is_ready';
+
+/** How the runtime observes an asynchronous operation reaching completion. */
+type PollCompletion = 'status' | 'absence' | 'readiness';
+
+/** Everything the runtime needs to poll one operation to completion. */
+interface PollingPlan {
+  /** Read-path template, with `{param}` placeholders. */
+  readonly path: string;
+  /**
+   * Placeholder in `path` filled from the created resource's `data.id`.
+   *
+   * Set for creates, whose read path is the item route under the collection
+   * they posted to and therefore carries one placeholder the request itself
+   * never supplied.
+   */
+  readonly idParam: string | undefined;
+  readonly completion: PollCompletion;
+  /** JSON:API resource type, selecting the status vocabulary. */
+  readonly resourceType: string | undefined;
+}
+
+/** What a GET on some path reads back. */
+interface ReadTarget {
+  readonly resourceType: string | undefined;
+  readonly hasStatus: boolean;
+  /** True when the resource reports readiness instead of a status. */
+  readonly hasReadiness: boolean;
+  /** True when the GET answers with an array — a collection, not one resource. */
+  readonly isCollection: boolean;
+}
+
+/** Describes what a GET on `path` returns, or undefined when there is no GET. */
+function describeReadPath(
   path: string,
-  method: string,
   document: OpenApiDocument,
   schemas: Record<string, unknown>,
-): boolean {
-  // A create posts to a collection, so the collection's own GET describes a
-  // list and never carries a status. What matters is whether the *created*
-  // resource is pollable, which is the item route: the same path plus an id
-  // segment. The runtime reaches it through the response's `self` link.
-  const readPath =
-    method === 'post'
-      ? (Object.keys(document.paths).find(
-          (candidate) =>
-            candidate.startsWith(`${path}/{`) &&
-            candidate.slice(path.length + 1).split('/').length === 1,
-        ) ?? path)
-      : path;
-
-  const getOperation = document.paths[readPath]?.['get'];
-  if (!getOperation) return false;
+): ReadTarget | undefined {
+  const getOperation = document.paths[path]?.['get'];
+  if (!getOperation) return undefined;
 
   const responses: Record<string, unknown> = getOperation.responses ?? {};
+
   for (const code of ['200', '201']) {
     const response = responses[code];
     if (typeof response !== 'object' || response === null) continue;
 
     const content = (response as { content?: Record<string, { schema?: unknown }> }).content ?? {};
     for (const media of Object.values(content)) {
-      const names = new Set<string>();
-      const visit = (node: unknown, depth: number): void => {
-        if (depth > 6 || typeof node !== 'object' || node === null) return;
-        const record = node as Record<string, unknown>;
+      const envelope = resolveSchema(media.schema, schemas) as
+        { properties?: Record<string, unknown> } | undefined;
 
-        const ref = record['$ref'];
-        if (typeof ref === 'string') {
-          visit(schemas[ref.replace('#/components/schemas/', '')], depth + 1);
-          return;
-        }
+      let data = resolveSchema(envelope?.properties?.['data'], schemas) as
+        { properties?: Record<string, unknown>; items?: unknown } | undefined;
 
-        for (const key of ['allOf', 'anyOf', 'oneOf']) {
-          const branches = record[key];
-          if (Array.isArray(branches)) for (const branch of branches) visit(branch, depth + 1);
-        }
+      // A list response wraps the resource in an array; the item describes it.
+      const isCollection = data?.items !== undefined;
+      if (isCollection) data = resolveSchema(data?.items, schemas) as typeof data;
 
-        const properties = record['properties'];
-        if (typeof properties === 'object' && properties !== null) {
-          const bag = properties as Record<string, unknown>;
-          for (const name of Object.keys(bag)) names.add(name);
-          visit(bag['data'], depth + 1);
-          visit(bag['attributes'], depth + 1);
-        }
-      };
+      const properties = data?.properties;
+      if (!properties) continue;
 
-      visit(media.schema, 0);
-      if (names.has('status') || names.has('state')) return true;
+      const typeEnum = (properties['type'] as { enum?: string[] } | undefined)?.enum;
+      const resourceType = typeof typeEnum?.[0] === 'string' ? typeEnum[0] : undefined;
+
+      const attributes = (properties['attributes'] as { properties?: Record<string, unknown> })
+        ?.properties;
+      const hasStatus =
+        attributes !== undefined &&
+        (attributes['status'] !== undefined || attributes['state'] !== undefined);
+
+      const readiness = attributes?.[READINESS_FIELD] as { type?: unknown } | undefined;
+      const hasReadiness = readiness?.type === 'boolean';
+
+      return { resourceType, hasStatus, hasReadiness, isCollection };
     }
   }
 
-  return false;
+  return undefined;
+}
+
+/**
+ * Derives the polling plan for one operation, or undefined when completion
+ * cannot be observed.
+ *
+ * A plan rather than a boolean, because the runtime needs three things a flag
+ * cannot carry: which path to read, which placeholder the created resource's id
+ * fills, and whether completion means "status settled" or "resource gone".
+ *
+ * Rules, all derived from the document:
+ *
+ *   - A create posts to a collection, whose own GET is a list and carries no
+ *     status. The created resource lives at the item route below it, reached
+ *     through the response's `self` link or, when Forge omits one, by rendering
+ *     that route with the returned id.
+ *   - A deletion finishes when the resource stops existing, so it polls its own
+ *     item route until 404. This applies only to true item routes: `DELETE
+ *     .../deployments/status` and `DELETE .../integrations/horizon` clear state
+ *     on an endpoint that keeps answering afterwards, so absence would never
+ *     arrive.
+ *   - An update polls the path it wrote to, provided that path reads back a
+ *     status. An nginx-config PUT reads back file content with no status, which
+ *     a status poll would call finished on the first read.
+ */
+function completionFor(target: ReadTarget): PollCompletion | undefined {
+  if (target.hasStatus) return 'status';
+  if (target.hasReadiness) return 'readiness';
+  return undefined;
+}
+
+function buildPollingPlan(
+  path: string,
+  method: string,
+  document: OpenApiDocument,
+  schemas: Record<string, unknown>,
+): PollingPlan | undefined {
+  if (method === 'delete') {
+    // Only an item route addresses a resource that can actually disappear.
+    if (!path.endsWith('}')) return undefined;
+    const target = describeReadPath(path, document, schemas);
+    if (!target) return undefined;
+
+    return {
+      path,
+      idParam: undefined,
+      completion: 'absence',
+      resourceType: target.resourceType,
+    };
+  }
+
+  if (method === 'post') {
+    const itemPath = Object.keys(document.paths).find(
+      (candidate) =>
+        candidate.startsWith(`${path}/{`) &&
+        candidate.slice(path.length + 1).split('/').length === 1,
+    );
+
+    const readPath = itemPath ?? path;
+    const target = describeReadPath(readPath, document, schemas);
+    const completion = target === undefined ? undefined : completionFor(target);
+    if (target === undefined || completion === undefined) return undefined;
+
+    // Without an item route below it, the only readable path is the one posted
+    // to. That is pollable when it reads back a single resource — an action
+    // endpoint such as `.../integrations/horizon` — but not when it reads back
+    // a list, which carries no status of its own and would look instantly
+    // finished.
+    if (itemPath === undefined && target.isCollection) return undefined;
+
+    const idParam =
+      itemPath === undefined ? undefined : itemPath.slice(path.length + 2, itemPath.length - 1);
+
+    return { path: readPath, idParam, completion, resourceType: target.resourceType };
+  }
+
+  const target = describeReadPath(path, document, schemas);
+  const completion = target === undefined ? undefined : completionFor(target);
+  if (target === undefined || completion === undefined) return undefined;
+
+  return {
+    path,
+    idParam: undefined,
+    completion,
+    resourceType: target.resourceType,
+  };
+}
+
+/** Serialises a polling plan into the generated file, omitting absent fields. */
+function formatPollingPlan(plan: PollingPlan | undefined): string {
+  if (!plan) return 'undefined';
+
+  const parts = [`path: ${JSON.stringify(plan.path)}`];
+  if (plan.idParam !== undefined) parts.push(`idParam: ${JSON.stringify(plan.idParam)}`);
+  parts.push(`completion: ${JSON.stringify(plan.completion)}`);
+  if (plan.resourceType !== undefined) {
+    parts.push(`resourceType: ${JSON.stringify(plan.resourceType)}`);
+  }
+
+  return `{ ${parts.join(', ')} }`;
 }
 
 /** Strips the Mintlify "Processing mode: <small><code>sync</code></small>" footer. */
@@ -501,6 +812,8 @@ function main(): void {
   const seenNames = new Map<string, string>();
   const seenOperationIds = new Set<string>();
   let destructiveCount = 0;
+  let asyncCount = 0;
+  let pollableCount = 0;
   let confirmCount = 0;
   const unclassifiedMutations: string[] = [];
   const doubleClassified: string[] = [];
@@ -581,6 +894,16 @@ function main(): void {
       if (isDestructive) destructiveCount += 1;
       if (requiresConfirm) confirmCount += 1;
 
+      // Only asynchronous operations are ever polled, so only they carry a plan.
+      const isAsync = operation['x-processingMode'] === 'async';
+      const pollingPlan = isAsync
+        ? buildPollingPlan(path, method, spec, schemaComponents)
+        : undefined;
+      if (isAsync) {
+        asyncCount += 1;
+        if (pollingPlan) pollableCount += 1;
+      }
+
       const summary = operation.summary ?? operationId;
       const description = cleanDescription(operation.description) || summary;
 
@@ -617,7 +940,7 @@ function main(): void {
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
           `    confirmationTargetFields: ${JSON.stringify(targetFields)},`,
-          `    pollable: ${isPollable(path, method, spec, schemaComponents)},`,
+          `    polling: ${formatPollingPlan(pollingPlan)},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,
           '  },',
@@ -686,6 +1009,17 @@ function main(): void {
     );
   }
 
+  const vocabularies = collectResourceVocabularies(schemaComponents);
+  const defaultPending = PENDING_BY_VALUE;
+
+  const pendingEntries = [...vocabularies.values()]
+    .sort((a, b) => a.resourceType.localeCompare(b.resourceType))
+    .map(
+      (vocabulary) =>
+        `  ${JSON.stringify(vocabulary.resourceType)}: ${JSON.stringify([...vocabulary.pending].sort())},`,
+    )
+    .join('\n');
+
   const header = `/**
  * GENERATED FILE — DO NOT EDIT BY HAND.
  *
@@ -696,12 +1030,35 @@ function main(): void {
  * Human documentation: https://forge.laravel.com/docs/api-reference/introduction
  *
  * ${descriptors.length} operations · ${destructiveCount} destructive · ${confirmCount} confirmation-gated
+ * ${pollableCount} of the ${asyncCount} asynchronous operations can be polled to completion.
  */
 
 import type { OperationDescriptor } from '../tools/types.js';
 
 /** Base URL declared by the OpenAPI document. */
 export const FORGE_API_BASE_URL = ${JSON.stringify(baseUrl)};
+
+/**
+ * Statuses that mean "still working", per JSON:API resource type.
+ *
+ * Forge reuses status strings with different meanings across resources —
+ * \`running\` is the healthy steady state of a background process but an
+ * in-flight command — so completion cannot be decided from one global set.
+ * Anything absent from a resource's list is terminal for that resource.
+ */
+export const PENDING_STATUSES: Readonly<Record<string, readonly string[]>> = {
+${pendingEntries}
+};
+
+/**
+ * Fallback vocabulary for resources whose status is a free-form string rather
+ * than an enum. Deliberately excludes \`running\`, which is a steady state
+ * everywhere except the two command-like resources — and both of those declare
+ * an enum, so they never reach this fallback.
+ */
+export const DEFAULT_PENDING_STATUSES: readonly string[] = ${JSON.stringify(
+    [...defaultPending].sort(),
+  )};
 
 /** Every operation in the Forge API, in document order. */
 export const OPERATIONS: readonly OperationDescriptor[] = [
@@ -711,7 +1068,8 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
 
   process.stdout.write(
     `Generated ${descriptors.length} operations ` +
-      `(${destructiveCount} destructive, ${confirmCount} confirmation-gated) -> ${OUT_PATH}\n`,
+      `(${destructiveCount} destructive, ${confirmCount} confirmation-gated, ` +
+      `${pollableCount}/${asyncCount} async pollable) -> ${OUT_PATH}\n`,
   );
 }
 

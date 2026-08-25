@@ -10,9 +10,10 @@
 import type { ForgeClient, ForgeResponse } from '../client/http.js';
 import { ForgeApiError, ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
-import { pollUntilTerminal, readStatus } from '../client/polling.js';
+import { pollUntilTerminal, readStatus, statusSettles } from '../client/polling.js';
+import { DEFAULT_PENDING_STATUSES, PENDING_STATUSES } from '../generated/operations.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
-import type { OperationDescriptor } from './types.js';
+import type { OperationDescriptor, PollingPlan } from './types.js';
 import { ArgumentValidator } from './validate.js';
 
 /**
@@ -206,17 +207,28 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
 /**
  * Whether `wait` should be advertised for this operation.
  *
- * The generator decides this from the OpenAPI document — an operation is
- * pollable only when its own path exposes a GET whose response carries a
- * `status` or `state` field. Only 26 of the API's 105 asynchronous operations
- * qualify, and inferring it from the HTTP method instead gets it wrong in both
- * directions: `DELETE .../deployments/status` resets state rather than removing
- * a resource, so waiting for a 404 would hang until timeout, while an nginx
- * config PUT reads back content with no status, which a status poll would call
- * finished on the first read.
+ * The generator decides this from the OpenAPI document, emitting a plan naming
+ * the read path, the placeholder its created resource's id fills, and whether
+ * completion means "status settled" or "resource gone". Inferring any of it
+ * from the HTTP method gets it wrong: `DELETE .../deployments/status` resets
+ * state on an endpoint that keeps answering, so waiting for a 404 would hang,
+ * while an nginx-config PUT reads back file content with no status, which a
+ * status poll would call finished on the first read.
  */
 function supportsPolling(descriptor: OperationDescriptor): boolean {
-  return descriptor.processingMode === 'async' && descriptor.pollable;
+  return descriptor.processingMode === 'async' && descriptor.polling !== undefined;
+}
+
+/**
+ * The statuses that mean "keep polling" for the resource a plan reads.
+ *
+ * Falls back to the default vocabulary for resources whose status is a
+ * free-form string rather than an enum.
+ */
+function pendingStatusesFor(plan: PollingPlan): ReadonlySet<string> {
+  const declared =
+    plan.resourceType === undefined ? undefined : PENDING_STATUSES[plan.resourceType];
+  return new Set(declared ?? DEFAULT_PENDING_STATUSES);
 }
 
 /**
@@ -365,44 +377,57 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     };
   }
 
-  // Poll the resource's own URL. A `self` link from the response is
-  // authoritative; otherwise the request path already addresses it.
-  const selfLink = extractSelfLink(response.data);
+  // Below here `wait: true` was requested on an operation the generator gave a
+  // plan, so the plan is present.
+  const plan = descriptor.polling as PollingPlan;
 
-  // A create posted to a collection: the created resource is only addressable
-  // through the link the API returned. Falling back to the request path would
-  // poll the collection, which is a list with no status and would look
-  // instantly finished.
-  if (descriptor.method === 'POST' && selfLink === undefined) {
-    return {
-      status: response.status,
-      accepted: response.accepted,
-      data: response.data,
-      ...(response.included === undefined ? {} : { included: response.included }),
-      ...(response.links === undefined ? {} : { links: response.links }),
-      note:
-        'Forge accepted the request but returned no self link, so the new resource could not be ' +
-        'polled. Read it back from its collection to observe completion.',
-    };
+  // Resolve the read path. A `self` link from the response is authoritative;
+  // otherwise the plan's template is rendered from the call's own arguments,
+  // plus the created resource's id where the template needs one. Forge does not
+  // always return a self link — `BackgroundProcessResource` requires only `id`
+  // and `type` — so falling back to the id is what makes a create pollable.
+  const selfLink = extractSelfLink(response.data);
+  let pollPath = selfLink;
+
+  if (pollPath === undefined) {
+    const pathArgs: Record<string, unknown> = { ...resolvedArgs };
+
+    if (plan.idParam !== undefined) {
+      const createdId = extractResourceId(response.data);
+      if (createdId === undefined) {
+        return {
+          status: response.status,
+          accepted: response.accepted,
+          data: response.data,
+          ...(response.meta === undefined ? {} : { meta: response.meta }),
+          ...(response.included === undefined ? {} : { included: response.included }),
+          ...(response.links === undefined ? {} : { links: response.links }),
+          note:
+            'Forge accepted the request but returned neither a self link nor a resource id, so ' +
+            'the new resource could not be polled. Read it back from its collection to observe ' +
+            'completion.',
+        };
+      }
+      pathArgs[plan.idParam] = createdId;
+    }
+
+    pollPath = renderPath(plan.path, pathArgs).path;
   }
 
-  const pollPath = selfLink ?? path;
+  const pending = pendingStatusesFor(plan);
+  const settles = statusSettles(pending);
 
   // A deletion finishes when the resource stops existing, so its final read is
   // a 404. Treating that as an error would report a successful delete as a
-  // failure — and 19 of the pollable operations are deletions.
-  const treat404AsDone = descriptor.method === 'DELETE';
+  // failure.
+  const absence = plan.completion === 'absence';
 
-  // Poll the whole response rather than just its data, so what comes back is
-  // the terminal read's own `included` and `links`. Returning data from the
-  // final GET alongside metadata from the original 202 would combine two
-  // different responses into one object.
-  const polled = await pollUntilTerminal(
+  const polled = await pollUntilTerminal<ForgeResponse>(
     async () => {
       try {
         return await client.request({ method: 'GET', path: pollPath, query: {} });
       } catch (error) {
-        if (treat404AsDone && error instanceof ForgeApiError && error.status === 404) {
+        if (absence && error instanceof ForgeApiError && error.status === 404) {
           return {
             status: 404,
             accepted: false,
@@ -415,8 +440,15 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
         throw error;
       }
     },
-    // The status lives on the resource, not on the response envelope.
-    { readStatus: (value) => readStatus((value as ForgeResponse).data) },
+    {
+      // The status lives on the resource, not on the response envelope.
+      readStatus: (value) => readStatus((value as ForgeResponse).data),
+      // In absence mode a *missing* status means the resource is still there,
+      // which is the opposite of what it means when waiting for one to settle.
+      // A resource that reports a settled status will never 404, so that counts
+      // as done too and the poll cannot hang on a soft-deleted record.
+      isTerminal: buildTerminalPredicate(plan, settles),
+    },
   );
 
   const terminal = polled.value;
@@ -432,8 +464,64 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
       status: polled.status,
       attempts: polled.attempts,
       elapsedMs: polled.elapsedMs,
+      completion: plan.completion,
+      path: pollPath,
     },
   };
+}
+
+/**
+ * Composes the predicate that decides when a poll has settled.
+ *
+ * The three modes disagree about what a *missing* status means, which is why
+ * one predicate cannot serve all of them:
+ *
+ *   - `status` — no status means there is nothing to wait for, so the first
+ *     read settles.
+ *   - `absence` — no status means the resource is still there, so the poll
+ *     continues. A 404 is the success signal. A resource that instead settles
+ *     on a terminal status will never 404, so that counts as done too and the
+ *     poll cannot hang on a record Forge keeps.
+ *   - `readiness` — `ServerResource` carries no status at all; provisioning is
+ *     finished when `is_ready` is true.
+ */
+function buildTerminalPredicate(
+  plan: PollingPlan,
+  settles: (status: string | undefined) => boolean,
+): (value: ForgeResponse, status: string | undefined) => boolean {
+  if (plan.completion === 'absence') {
+    return (value, status) => value.status === 404 || (status !== undefined && settles(status));
+  }
+
+  if (plan.completion === 'readiness') {
+    return (value) => readReadiness(value.data) === true;
+  }
+
+  return (_value, status) => settles(status);
+}
+
+/** Reads the flattened `is_ready` attribute, when the resource has one. */
+function readReadiness(data: unknown): boolean | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const value = (data as Record<string, unknown>)['is_ready'];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * Reads the `id` of a JSON:API primary resource.
+ *
+ * A create returns the new resource's identity even when it omits a `self`
+ * link, and that id plus the generated read-path template is enough to address
+ * it.
+ */
+function extractResourceId(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const id = (data as Record<string, unknown>)['id'];
+
+  if (typeof id === 'string' && id.trim() !== '') return id;
+  if (typeof id === 'number') return String(id);
+
+  return undefined;
 }
 
 /**

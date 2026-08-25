@@ -54,7 +54,7 @@ function renderRow(operation: OperationDescriptor): string {
   if (operation.destructive) flags.push('**destructive**');
   else if (operation.requiresConfirm) flags.push('**confirm**');
   if (operation.processingMode === 'async') {
-    flags.push(operation.pollable ? 'async, pollable' : 'async');
+    flags.push(operation.polling ? `async, pollable (${operation.polling.completion})` : 'async');
   }
 
   return [
@@ -81,7 +81,7 @@ function main(): void {
   );
   const asyncCount = OPERATIONS.filter((operation) => operation.processingMode === 'async').length;
   const pollableCount = OPERATIONS.filter(
-    (operation) => operation.processingMode === 'async' && operation.pollable,
+    (operation) => operation.processingMode === 'async' && operation.polling !== undefined,
   ).length;
 
   const lines: string[] = [

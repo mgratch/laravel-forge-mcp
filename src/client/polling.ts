@@ -15,31 +15,36 @@
 import { ForgePollTimeoutError } from './errors.js';
 
 /**
- * States that mean "still working". Everything else is treated as terminal.
+ * Decides whether a poll has settled.
  *
- * Drawn from the enums the OpenAPI document declares for the resources that
- * async operations touch (`ResourceState`, `DeploymentStatus`, `CommandStatus`).
+ * Injected rather than fixed, because Forge has no single status vocabulary:
+ * `running` is the healthy steady state of a background process but an
+ * in-flight `CommandStatus`, and `starting`/`stopping` are transitional on some
+ * resources and absent from others entirely. One global set of non-terminal
+ * values is therefore wrong in both directions — it polls a finished background
+ * process until timeout while reporting a still-executing command as finished.
+ *
+ * The per-resource vocabularies live in the generated catalog; the registry
+ * composes them into one of these.
+ *
+ * @see https://forge.laravel.com/api/docs.openapi — `components.schemas.*Resource`
  */
-export const NON_TERMINAL_STATES: ReadonlySet<string> = new Set([
-  'pending',
-  'queued',
-  'installing',
-  'updating',
-  'deploying',
-  'building',
-  'restarting',
-  'provisioning',
-  'configuring',
-  'renewing',
-  'running',
-  'waiting',
-  'syncing',
-  'restoring',
-  'deleting',
-  'removing',
-]);
+export type TerminalPredicate<T> = (value: T, status: string | undefined) => boolean;
 
-export interface PollOptions {
+/**
+ * Builds a predicate that settles when the status leaves a resource's pending
+ * set.
+ *
+ * A resource with no `status`/`state` field is terminal on the first read —
+ * there is nothing to wait for.
+ */
+export function statusSettles(
+  pending: ReadonlySet<string>,
+): (status: string | undefined) => boolean {
+  return (status) => status === undefined || !pending.has(status.toLowerCase());
+}
+
+export interface PollOptions<T> {
   /** How long to keep polling before giving up. Defaults to 120 seconds. */
   readonly timeoutMs?: number;
   /** Delay between the first two polls. Defaults to 2 seconds. */
@@ -57,6 +62,14 @@ export interface PollOptions {
    * supply this so the status is read from the right level.
    */
   readonly readStatus?: (value: unknown) => string | undefined;
+  /**
+   * Decides whether a read has settled.
+   *
+   * Defaults to "any status outside the supplied pending set, or no status at
+   * all". Callers waiting for a resource to disappear supply their own, since
+   * for them a missing status means the resource is still there.
+   */
+  readonly isTerminal?: TerminalPredicate<T>;
 }
 
 /** Outcome of a poll. */
@@ -95,22 +108,16 @@ export function readStatus(value: unknown): string | undefined {
   return undefined;
 }
 
-/** True when a status string means the operation has settled. */
-export function isTerminalStatus(status: string | undefined): boolean {
-  if (status === undefined) return true;
-  return !NON_TERMINAL_STATES.has(status.toLowerCase());
-}
-
 /**
- * Polls `read` with exponential backoff until the resource reaches a terminal
- * state or the timeout expires.
+ * Polls `read` with exponential backoff until `isTerminal` accepts a result or
+ * the timeout expires.
  *
- * A resource with no `status`/`state` field is considered terminal on the first
- * read — there is nothing to wait for.
+ * With the default predicate, a resource with no `status`/`state` field settles
+ * on the first read — there is nothing to wait for.
  */
 export async function pollUntilTerminal<T>(
   read: () => Promise<T>,
-  options: PollOptions = {},
+  options: PollOptions<T> = {},
 ): Promise<PollResult<T>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
@@ -118,6 +125,8 @@ export async function pollUntilTerminal<T>(
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const statusOf = options.readStatus ?? readStatus;
+  const isTerminal =
+    options.isTerminal ?? ((_value: T, status: string | undefined) => status === undefined);
 
   const startedAt = now();
   let interval = initialIntervalMs;
@@ -129,7 +138,7 @@ export async function pollUntilTerminal<T>(
     const value = await read();
     lastStatus = statusOf(value);
 
-    if (isTerminalStatus(lastStatus)) {
+    if (isTerminal(value, lastStatus)) {
       return { value, status: lastStatus, attempts, elapsedMs: now() - startedAt };
     }
 
