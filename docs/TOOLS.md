@@ -5,7 +5,7 @@
 Every tool below maps to exactly one operation in the [Laravel Forge API](https://forge.laravel.com/docs/api-reference/introduction).
 
 - **273** tools total
-- **105** are asynchronous; **49** of those expose a status that can be polled and accept `wait: true`
+- **105** are asynchronous; **43** of those expose a status that can be polled and accept `wait: true`
 - **28** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
 - **61** require a matching `confirm` argument
 
@@ -232,7 +232,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/logs
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `get_servers_logs` | `GET /orgs/{organization}/servers/{server}/logs/{key}` | Get server log content | — |
-| `delete_servers_logs` | `DELETE /orgs/{organization}/servers/{server}/logs/{key}` | Delete server log content | async, pollable (absence) |
+| `delete_servers_logs` | `DELETE /orgs/{organization}/servers/{server}/logs/{key}` | Delete server log content | async |
 
 ### Monitors
 
@@ -406,14 +406,14 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `update_servers` | `PUT /orgs/{organization}/servers/{server}` | Update server | — |
 | `delete_servers` | `DELETE /orgs/{organization}/servers/{server}` | Delete server | **destructive**, async, pollable (absence) |
 | `get_servers_network` | `GET /orgs/{organization}/servers/{server}/network` | Get server network | — |
-| `update_servers_network` | `PUT /orgs/{organization}/servers/{server}/network` | Update server network | async, pollable (readiness) |
+| `update_servers_network` | `PUT /orgs/{organization}/servers/{server}/network` | Update server network | async |
 | `list_servers_events` | `GET /orgs/{organization}/servers/{server}/events` | List server events | — |
 | `get_servers_events` | `GET /orgs/{organization}/servers/{server}/events/{event}` | Get server event | — |
 | `get_servers_events_output` | `GET /orgs/{organization}/servers/{server}/events/{event}/output` | Get server event output | — |
 | `get_servers_php_cli_version` | `GET /orgs/{organization}/servers/{server}/php/cli-version` | Get PHP CLI version | — |
-| `update_servers_php_cli_version` | `PUT /orgs/{organization}/servers/{server}/php/cli-version` | Update PHP CLI version | async, pollable (status) |
+| `update_servers_php_cli_version` | `PUT /orgs/{organization}/servers/{server}/php/cli-version` | Update PHP CLI version | async |
 | `get_servers_php_site_version` | `GET /orgs/{organization}/servers/{server}/php/site-version` | Get PHP site version | — |
-| `update_servers_php_site_version` | `PUT /orgs/{organization}/servers/{server}/php/site-version` | Update PHP site version | async, pollable (status) |
+| `update_servers_php_site_version` | `PUT /orgs/{organization}/servers/{server}/php/site-version` | Update PHP site version | async |
 | `list_servers_php_versions` | `GET /orgs/{organization}/servers/{server}/php/versions` | List PHP versions for server | — |
 | `create_servers_php_versions` | `POST /orgs/{organization}/servers/{server}/php/versions` | Install new PHP version | async, pollable (status) |
 | `get_servers_php_versions` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Get PHP version | — |
@@ -454,8 +454,8 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `list_servers_sites_domains` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains` | List domains | — |
 | `create_servers_sites_domains` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains` | Create domain | async, pollable (status) |
 | `get_servers_sites_domains` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Get domain | — |
-| `update_servers_sites_domains` | `PATCH /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Update domain | async, pollable (status) |
-| `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Delete domain | **confirm**, async, pollable (absence) |
+| `update_servers_sites_domains` | `PATCH /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Update domain | async |
+| `delete_servers_sites_domains` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}` | Delete domain | **confirm**, async |
 | `servers_sites_domains_configurations` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/configurations` | Get domain DNS configuration | — |
 | `create_servers_sites_domains_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/actions` | Create domain action | **confirm**, async |
 | `get_servers_sites_domains_nginx` | `GET /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` | Get domain Nginx configuration | — |

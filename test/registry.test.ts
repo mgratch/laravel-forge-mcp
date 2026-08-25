@@ -937,6 +937,107 @@ describe('polling plans', () => {
     expect(stub.requests[2]?.url).toContain('/servers/55');
   }, 20_000);
 
+  it("does not settle a deletion on the resource's pre-delete steady state", async () => {
+    // A background process answers `running` before it answers `removing`, and
+    // `running` is terminal for that resource under the status vocabulary.
+    // Accepting it here would report the deletion complete while the process is
+    // still there.
+    const stub = stubFetch([
+      { status: 202 },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'running' }) },
+      { body: jsonApiResource('backgroundProcesses', 7, { status: 'removing' }) },
+      { status: 404, body: { errors: [{ title: 'Not Found' }] } },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['delete_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'delete_servers_background_processes');
+
+    const result = (await tool.handler({
+      server: 1,
+      backgroundProcess: 7,
+      confirm: 'delete_servers_background_processes server=1 backgroundProcess=7',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    // Four requests: the delete plus three reads. Settling on `running` would
+    // have stopped after two.
+    expect(stub.requests).toHaveLength(4);
+    expect((result['polled'] as Record<string, unknown>)['attempts']).toBe(3);
+  }, 30_000);
+
+  it('keeps polling a maintenance-mode toggle through its transition', async () => {
+    // `LaravelMaintenanceIntegrationResource` carries the mode in `enabled` and
+    // the transition in a nullable `status`, so `enabling` means work in
+    // progress and null means no transition is running.
+    const stub = stubFetch([
+      { status: 202 },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: false,
+          status: 'enabling',
+        }),
+      },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: true,
+          status: null,
+        }),
+      },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_sites_integrations_laravel_maintenance'],
+    });
+    const tool = findTool(tools, 'create_servers_sites_integrations_laravel_maintenance');
+
+    const result = (await tool.handler({
+      server: 1,
+      site: 2,
+      status: 503,
+      confirm: 'create_servers_sites_integrations_laravel_maintenance server=1 site=2',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect(stub.requests).toHaveLength(3);
+    expect((result['data'] as Record<string, unknown>)['enabled']).toBe(true);
+  }, 20_000);
+
+  it('classifies both maintenance-mode transitions as pending', () => {
+    expect(PENDING_STATUSES['laravelMaintenanceIntegrations']).toEqual(
+      expect.arrayContaining(['disabling', 'enabling']),
+    );
+  });
+
+  it('does not poll a response Forge completed inline', async () => {
+    // `wait: true` on an operation that answered 200 has nothing to wait for.
+    // Polling anyway would loop for a completion signal that already passed.
+    const stub = stubFetch([
+      { status: 200, body: jsonApiResource('backgroundProcesses', 7, { status: 'running' }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = findTool(tools, 'create_servers_background_processes');
+
+    await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    });
+
+    expect(stub.requests).toHaveLength(1);
+  });
+
   it('never points a polling plan at a collection', () => {
     for (const operation of OPERATIONS) {
       const plan = operation.polling;

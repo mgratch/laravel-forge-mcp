@@ -252,6 +252,56 @@ describe('generated operation table', () => {
     }
   });
 
+  it('only plans polling for operations that document a deferred response', () => {
+    // Seven operations are tagged async but document a 200/204 success: Forge
+    // completes them inline. `DELETE .../logs/{key}` clears a log's content and
+    // leaves the key readable, so an absence poll would wait for a 404 that
+    // never arrives.
+    for (const operation of OPERATIONS) {
+      if (!operation.polling) continue;
+
+      const documented = spec.paths[operation.path]?.[operation.method.toLowerCase()] as
+        { responses?: Record<string, unknown> } | undefined;
+
+      expect(
+        documented?.responses?.['202'],
+        `${operation.name} has a plan but documents no 202`,
+      ).toBeDefined();
+    }
+  });
+
+  it('never points a polling plan at a collection', () => {
+    // A list carries no completion state of its own, and the runtime's status
+    // and readiness readers both refuse arrays, so such a plan could never
+    // terminate.
+    for (const operation of OPERATIONS) {
+      const plan = operation.polling;
+      if (!plan) continue;
+
+      const readOperation = spec.paths[plan.path]?.['get'] as
+        { responses?: Record<string, Record<string, unknown>> } | undefined;
+      const content = readOperation?.responses?.['200']?.['content'] as
+        Record<string, { schema?: { properties?: { data?: { type?: string } } } }> | undefined;
+
+      for (const media of Object.values(content ?? {})) {
+        expect(
+          media.schema?.properties?.data?.type,
+          `${operation.name} polls a collection at ${plan.path}`,
+        ).not.toBe('array');
+      }
+    }
+  });
+
+  it('plans absence only for deletions of the resource the path addresses', () => {
+    for (const operation of OPERATIONS) {
+      if (operation.polling?.completion !== 'absence') continue;
+
+      expect(operation.method, `${operation.name}`).toBe('DELETE');
+      expect(operation.polling.path.endsWith('}'), `${operation.name}`).toBe(true);
+      expect(operation.polling.path, `${operation.name}`).toBe(operation.path);
+    }
+  });
+
   it('requires confirmation for every destructive operation', () => {
     for (const operation of OPERATIONS.filter((candidate) => candidate.destructive)) {
       expect(operation.requiresConfirm, `${operation.name} is unguarded`).toBe(true);

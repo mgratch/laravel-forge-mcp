@@ -353,7 +353,11 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     ...(body === undefined ? {} : { body }),
   });
 
-  const shouldWait = supportsPolling(descriptor) && resolvedArgs['wait'] === true;
+  // Polling only makes sense when Forge deferred the work. A 200 or 204 means
+  // it is already done, so there is nothing to wait for — and a poll started
+  // against one would loop for a completion signal that already passed.
+  const shouldWait =
+    supportsPolling(descriptor) && resolvedArgs['wait'] === true && response.accepted;
   if (!shouldWait) {
     return {
       status: response.status,
@@ -473,15 +477,18 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
 /**
  * Composes the predicate that decides when a poll has settled.
  *
- * The three modes disagree about what a *missing* status means, which is why
- * one predicate cannot serve all of them:
+ * The three modes disagree about what any given read means, which is why one
+ * predicate cannot serve all of them:
  *
- *   - `status` — no status means there is nothing to wait for, so the first
- *     read settles.
- *   - `absence` — no status means the resource is still there, so the poll
- *     continues. A 404 is the success signal. A resource that instead settles
- *     on a terminal status will never 404, so that counts as done too and the
- *     poll cannot hang on a record Forge keeps.
+ *   - `status` — the resource's status left its own pending set. No status at
+ *     all means there is nothing to wait for, so the first read settles.
+ *   - `absence` — only a 404 counts. Everything else means the resource is
+ *     still there, *including* an ordinary terminal status: a background
+ *     process being deleted answers `running` before it answers `removing`, so
+ *     accepting a terminal status here would report a deletion as complete
+ *     while the resource still exists. Waiting strictly for the 404 means a
+ *     record Forge keeps will time out, which is the honest outcome — a
+ *     timeout says "still there", a false success does not.
  *   - `readiness` — `ServerResource` carries no status at all; provisioning is
  *     finished when `is_ready` is true.
  */
@@ -489,9 +496,7 @@ function buildTerminalPredicate(
   plan: PollingPlan,
   settles: (status: string | undefined) => boolean,
 ): (value: ForgeResponse, status: string | undefined) => boolean {
-  if (plan.completion === 'absence') {
-    return (value, status) => value.status === 404 || (status !== undefined && settles(status));
-  }
+  if (plan.completion === 'absence') return (value) => value.status === 404;
 
   if (plan.completion === 'readiness') {
     return (value) => readReadiness(value.data) === true;

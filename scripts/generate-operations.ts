@@ -445,9 +445,12 @@ const TERMINAL_BY_VALUE: ReadonlySet<string> = new Set([
  *     state, so polling must continue until `finished`.
  *   - `heartbeats` — `pending` is the resting state of a heartbeat that has not
  *     fired yet, not work in progress.
- *   - `laravelMaintenanceIntegrations` — `MaintenanceModeStatus` has only
- *     `enabling` and `disabling`, which name the mode rather than a transition;
- *     treating them as in-flight would poll every toggle until timeout.
+ *
+ * `laravelMaintenanceIntegrations` deliberately has no entry: its `enabling`
+ * and `disabling` values do read as transitions, because the resource carries a
+ * separate `enabled: boolean` for the mode itself and a *nullable* `status`.
+ * A null status means no transition is running, which the runtime already
+ * settles on.
  */
 const RESOURCE_STATUS_OVERRIDES: Readonly<
   Record<string, Readonly<Record<string, 'pending' | 'terminal'>>>
@@ -455,7 +458,6 @@ const RESOURCE_STATUS_OVERRIDES: Readonly<
   commands: { running: 'pending' },
   recipeLogs: { running: 'pending' },
   heartbeats: { pending: 'terminal' },
-  laravelMaintenanceIntegrations: { disabling: 'terminal', enabling: 'terminal' },
 };
 
 /** A resource's JSON:API `type` and the statuses that mean "keep polling". */
@@ -691,6 +693,14 @@ function buildPollingPlan(
   document: OpenApiDocument,
   schemas: Record<string, unknown>,
 ): PollingPlan | undefined {
+  // Seven operations are tagged async but document a 200/204 success: Forge
+  // completes them inline. Nothing was deferred, so there is nothing to wait
+  // for, and `DELETE .../logs/{key}` — which clears a log's *content* and
+  // leaves the key readable — would loop until timeout waiting for a 404 that
+  // never comes. The runtime enforces the same rule against the response it
+  // actually received; this keeps `wait` off the schema in the first place.
+  if (document.paths[path]?.[method]?.responses?.['202'] === undefined) return undefined;
+
   if (method === 'delete') {
     // Only an item route addresses a resource that can actually disappear.
     if (!path.endsWith('}')) return undefined;
@@ -733,6 +743,13 @@ function buildPollingPlan(
   const target = describeReadPath(path, document, schemas);
   const completion = target === undefined ? undefined : completionFor(target);
   if (target === undefined || completion === undefined) return undefined;
+
+  // `GET .../servers/{server}/network` answers with an array of
+  // `ServerResource`, so its `is_ready` belongs to the array *item*, not to any
+  // single resource the caller could poll. A list carries no completion state
+  // of its own, and the runtime's readers deliberately refuse arrays, so a plan
+  // pointed at one could never terminate.
+  if (target.isCollection) return undefined;
 
   return {
     path,

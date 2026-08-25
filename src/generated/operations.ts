@@ -8,7 +8,7 @@
  * Human documentation: https://forge.laravel.com/docs/api-reference/introduction
  *
  * 273 operations · 28 destructive · 61 confirmation-gated
- * 49 of the 105 asynchronous operations can be polled to completion.
+ * 43 of the 105 asynchronous operations can be polled to completion.
  */
 
 import type { OperationDescriptor } from '../tools/types.js';
@@ -34,7 +34,7 @@ export const PENDING_STATUSES: Readonly<Record<string, readonly string[]>> = {
   "deploymentStatuses": ["deploying","pending","queued"],
   "domainRecords": ["connecting","disabling","enabling","pending","removing","securing","updating"],
   "heartbeats": [],
-  "laravelMaintenanceIntegrations": [],
+  "laravelMaintenanceIntegrations": ["disabling","enabling"],
   "monitors": ["deleting","disabling","enabling","installing","removing","renewing","restarting","restoring","starting","stopping","syncing","updating"],
   "recipeLogs": ["running","waiting"],
   "redirect-rules": ["installing","removing"],
@@ -1510,7 +1510,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/logs/{key}", completion: "absence", resourceType: "serverLogs" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: false,
   },
@@ -3296,7 +3296,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/network", completion: "readiness", resourceType: "servers" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: false,
   },
@@ -3391,7 +3391,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/php/cli-version", completion: "status", resourceType: "phpVersions" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: false,
   },
@@ -3429,7 +3429,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/php/site-version", completion: "status", resourceType: "phpVersions" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: false,
   },
@@ -4075,7 +4075,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}", completion: "status", resourceType: "domainRecords" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: false,
   },
@@ -4094,7 +4094,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: false,
     confirmationTargetFields: [],
-    polling: { path: "/orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}", completion: "absence", resourceType: "domainRecords" },
+    polling: undefined,
     destructive: false,
     requiresConfirm: true,
   },

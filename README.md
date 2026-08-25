@@ -163,7 +163,7 @@ Deploy and wait for the result:
 ```
 
 `wait: true` is offered only where the OpenAPI document shows a way to observe
-completion — 49 of the API's 105 asynchronous operations. The generator emits a
+completion — 43 of the API's 105 asynchronous operations. The generator emits a
 per-operation plan naming the path to read, the placeholder the created
 resource's id fills, and how completion is recognised:
 
