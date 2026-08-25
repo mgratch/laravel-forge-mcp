@@ -69,9 +69,14 @@ and issues no request.
 
 **Two independent gates protect destructive operations:**
 
-1. **Registration.** Tools that delete infrastructure or irreversibly remove data are not registered
-   at all unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`. An agent cannot call — or even see — a tool that
-   is switched off.
+1. **Registration.** Tools that delete infrastructure, irreversibly remove data, or execute
+   caller-authored code are not registered at all unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`. An agent
+   cannot call — or even see — a tool that is switched off.
+
+   Execution counts as destructive here, because it subsumes deletion. `POST .../sites/commands`
+   takes an unconstrained shell string, and a custom recipe is an arbitrary script run on
+   caller-selected servers; either can reproduce the consequence of every tool the switch hides.
+   Classifying them by their HTTP verb would have left `rm -rf` one unguarded `POST` away.
 
 2. **Targeted confirmation.** When enabled, each still requires a `confirm` argument that names the
    operation _and its target_:
@@ -90,6 +95,23 @@ and issues no request.
    `create_servers_archives server_id=12345` — without that, one confirmation
    would archive any server. Generation refuses to run if a guarded operation
    has no target bound into its phrase.
+
+   Where the payload _is_ the hazard, the phrase binds the payload by digest:
+
+   ```jsonc
+   {
+     "server": 12345, "site": 67890,
+     "command": "php artisan migrate --force",
+     "confirm": "create_servers_sites_commands server=12345 site=67890 command=sha256:9c1185a5c5e9fc54"
+   }
+   ```
+
+   Approving "run a command" would mean nothing if the command could change between the approval
+   and the request, and echoing it verbatim is not an option for a deployment script or a whole
+   `.env` — one is unreadable, the other is secret. A 16-hex-character SHA-256 prefix binds the
+   bytes without disclosing them: change one character of the command, script, `.env` or deployment
+   script and the confirmation no longer matches. Recipe runs bind the **server list** instead,
+   since for them the hazard is where the script lands.
 
    A generic `"yes"` is refused, and so is a phrase naming a different server — so a model cannot
    satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.

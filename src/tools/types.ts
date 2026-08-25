@@ -136,6 +136,18 @@ export interface OperationDescriptor {
    */
   readonly confirmationTargetFields: readonly string[];
   /**
+   * Whether repeating this request has the same effect as sending it once.
+   *
+   * Derived from the HTTP method per RFC 9110, then corrected per operation:
+   * Forge uses PUT for two credential *regenerations*, where a retry after an
+   * ambiguous failure mints a second credential. Drives both the retry decision
+   * and the `idempotentHint` advertised to MCP clients, so the two cannot
+   * drift.
+   *
+   * @see https://www.rfc-editor.org/rfc/rfc9110#name-idempotent-methods
+   */
+  readonly idempotent: boolean;
+  /**
    * How completion is observed, or `undefined` when it cannot be.
    *
    * Derived from the document rather than inferred from the HTTP method, which

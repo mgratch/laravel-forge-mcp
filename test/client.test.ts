@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   ForgeApiError,
   ForgeConfigurationError,
+  ForgePollTimeoutError,
   ForgeRateLimitError,
 } from '../src/client/errors.js';
 import { ForgeClient } from '../src/client/http.js';
 import { extractNextCursor, extractSelfLink, normalizeResponse } from '../src/client/jsonapi.js';
+import { pollUntilTerminal } from '../src/client/polling.js';
 import {
   RateLimiter,
   parseRateLimitHeaders,
@@ -543,5 +545,63 @@ describe('self link resolution', () => {
       makeClient(stub).request({ method: 'GET', path: 'https://evil.example/api/orgs/acme' }),
     ).rejects.toThrow(/cross-origin/i);
     expect(stub.requests).toHaveLength(0);
+  });
+});
+
+describe('polling deadlines', () => {
+  it('takes a final read at the deadline rather than giving up before it', async () => {
+    // The old guard threw as soon as the *next* interval would cross the
+    // deadline, discarding the tail of the budget: a 120s plan stopped at 114s.
+    let clock = 0;
+    const reads: number[] = [];
+
+    const result = await pollUntilTerminal(
+      () => {
+        reads.push(clock);
+        // Terminal only on the very last permissible read.
+        return Promise.resolve({ status: clock >= 10_000 ? 'finished' : 'deploying' });
+      },
+      {
+        timeoutMs: 10_000,
+        initialIntervalMs: 4_000,
+        maxIntervalMs: 4_000,
+        sleep: (ms: number) => {
+          clock += ms;
+          return Promise.resolve();
+        },
+        now: () => clock,
+        isTerminal: (_value: { status: string }, status: string | undefined) =>
+          status === 'finished',
+      },
+    );
+
+    expect(result.status).toBe('finished');
+    expect(reads.at(-1)).toBe(10_000);
+  });
+
+  it('never sleeps past the deadline, however large the interval', async () => {
+    let clock = 0;
+    const slept: number[] = [];
+
+    await expect(
+      pollUntilTerminal(() => Promise.resolve({ status: 'deploying' }), {
+        timeoutMs: 5_000,
+        // An interval far larger than the whole budget: without clamping, the
+        // effective budget would be a fraction of the configured one.
+        initialIntervalMs: 60_000,
+        maxIntervalMs: 60_000,
+        sleep: (ms: number) => {
+          slept.push(ms);
+          clock += ms;
+          return Promise.resolve();
+        },
+        now: () => clock,
+        isTerminal: (_value: { status: string }, status: string | undefined) =>
+          status === 'finished',
+      }),
+    ).rejects.toThrow(ForgePollTimeoutError);
+
+    expect(slept).toEqual([5_000]);
+    expect(clock).toBe(5_000);
   });
 });

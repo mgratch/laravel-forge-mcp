@@ -145,7 +145,13 @@ export async function pollUntilTerminal<T>(
     }
 
     const elapsed = now() - startedAt;
-    if (elapsed + interval >= timeoutMs) {
+    const remaining = timeoutMs - elapsed;
+
+    // Give up only once the deadline has actually passed with a non-terminal
+    // read. Throwing as soon as the *next* interval would cross it wastes the
+    // tail of the budget — and with an interval anywhere near the timeout, the
+    // effective budget would be a fraction of the configured one.
+    if (remaining <= 0) {
       throw new ForgePollTimeoutError(
         `Operation did not reach a terminal state within ${Math.round(timeoutMs / 1000)}s ` +
           `(last status: ${lastStatus ?? 'unknown'}). ` +
@@ -155,7 +161,8 @@ export async function pollUntilTerminal<T>(
       );
     }
 
-    await sleep(interval);
+    // Never sleep past the deadline: the last read happens *at* it.
+    await sleep(Math.min(interval, remaining));
     interval = Math.min(interval * 2, maxIntervalMs);
   }
 }

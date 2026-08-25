@@ -6,8 +6,8 @@ Every tool below maps to exactly one operation in the [Laravel Forge API](https:
 
 - **273** tools total
 - **105** are asynchronous; **40** of those expose a status that can be polled and accept `wait: true`
-- **28** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
-- **61** require a matching `confirm` argument
+- **30** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
+- **71** require a matching `confirm` argument
 
 ## Argument conventions
 
@@ -34,9 +34,11 @@ These are hidden unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`, and always require `con
 | `delete_servers_database_backups` | `DELETE /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}` |
 | `delete_servers_database_backups_instances` | `DELETE /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}/instances/{backup}` |
 | `create_servers_database_backups_instances_restores` | `POST /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}/instances/{backup}/restores` |
+| `create_servers_sites_commands` | `POST /orgs/{organization}/servers/{server}/sites/{site}/commands` |
 | `delete_servers_database_schemas` | `DELETE /orgs/{organization}/servers/{server}/database/schemas/{database}` |
 | `delete_servers_database_users` | `DELETE /orgs/{organization}/servers/{server}/database/users/{databaseUser}` |
 | `delete_servers_sites_deploy_key` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deploy-key` |
+| `create_recipes_runs` | `POST /orgs/{organization}/recipes/{recipe}/runs` |
 | `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` |
 | `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` |
 | `create_roles` | `POST /orgs/{organization}/roles` |
@@ -68,6 +70,8 @@ counterpart in the API, so a mistake is not trivially reversible.
 | Tool | Endpoint |
 | --- | --- |
 | `delete_servers_background_processes` | `DELETE /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` |
+| `update_servers_sites_deployments_script` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` |
+| `update_servers_sites_deployments_deploy_hook` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` |
 | `delete_servers_sites_deployments_push_to_deploy` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` |
 | `delete_servers_firewall_rules` | `DELETE /orgs/{organization}/servers/{server}/firewall-rules/{rule}` |
 | `delete_servers_sites_integrations_horizon` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/horizon` |
@@ -77,7 +81,11 @@ counterpart in the API, so a mistake is not trivially reversible.
 | `create_servers_sites_integrations_laravel_maintenance` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` |
 | `delete_servers_sites_integrations_laravel_scheduler` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` |
 | `delete_servers_nginx_templates` | `DELETE /orgs/{organization}/servers/{server}/nginx/templates/{nginxTemplate}` |
+| `create_organization_recipes` | `POST /orgs/{organization}/recipes` |
+| `update_recipes` | `PUT /orgs/{organization}/recipes/{recipe}` |
+| `create_forge_recipes_runs` | `POST /forge-recipes/{forgeRecipe}/runs` |
 | `delete_servers_sites_redirect_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/redirect-rules/{redirectRule}` |
+| `update_servers_key` | `PUT /orgs/{organization}/servers/{server}/key` |
 | `delete_servers_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/scheduled-jobs/{job}` |
 | `delete_servers_sites_scheduled_jobs` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs/{job}` |
 | `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` |
@@ -99,7 +107,9 @@ counterpart in the API, so a mistake is not trivially reversible.
 | `update_servers_sites_domains_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/nginx` |
 | `delete_servers_sites_domains_certificates` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}` |
 | `create_servers_sites_domains_certificates_actions` | `POST /orgs/{organization}/servers/{server}/sites/{site}/domains/{domainRecord}/certificates/{certificate}/actions` |
+| `update_servers_sites_environment` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/environment` |
 | `update_servers_sites_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/nginx` |
+| `update_servers_sites_load_balancing_nodes` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/load-balancing-nodes` |
 
 ## All tools by resource
 
@@ -140,7 +150,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/commands
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_servers_sites_commands` | `GET /orgs/{organization}/servers/{server}/sites/{site}/commands` | List commands | — |
-| `create_servers_sites_commands` | `POST /orgs/{organization}/servers/{server}/sites/{site}/commands` | Create command | async, pollable (status) |
+| `create_servers_sites_commands` | `POST /orgs/{organization}/servers/{server}/sites/{site}/commands` | Create command | **destructive**, async, pollable (status) |
 | `get_servers_sites_commands` | `GET /orgs/{organization}/servers/{server}/sites/{site}/commands/{command}` | Get command | — |
 | `delete_servers_sites_commands` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/commands/{command}` | Delete command | — |
 | `get_servers_sites_commands_output` | `GET /orgs/{organization}/servers/{server}/sites/{site}/commands/{command}/output` | Get command output | — |
@@ -178,9 +188,9 @@ Forge documentation: https://forge.laravel.com/docs/sites/deployments
 | `get_servers_sites_deployments_status` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/status` | Get deployment status | — |
 | `delete_servers_sites_deployments_status` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/status` | Update deployment state | async, pollable (status) |
 | `get_servers_sites_deployments_script` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` | Get deployment script | — |
-| `update_servers_sites_deployments_script` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` | Update deployment script | — |
+| `update_servers_sites_deployments_script` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` | Update deployment script | **confirm** |
 | `get_servers_sites_deployments_deploy_hook` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Get the deployment trigger URL | — |
-| `update_servers_sites_deployments_deploy_hook` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Update deployment trigger URL | — |
+| `update_servers_sites_deployments_deploy_hook` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Update deployment trigger URL | **confirm** |
 | `create_servers_sites_deployments_push_to_deploy` | `POST /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` | Create push to deploy configuration | async |
 | `delete_servers_sites_deployments_push_to_deploy` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/push-to-deploy` | Delete push to deploy configuration | **confirm**, async |
 | `get_servers_sites_deployments` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/{deployment}` | Get deployment | — |
@@ -293,19 +303,19 @@ Forge documentation: https://forge.laravel.com/docs/recipes
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_recipes` | `GET /orgs/{organization}/recipes` | List organization recipes | — |
-| `create_organization_recipes` | `POST /orgs/{organization}/recipes` | Create recipe | — |
+| `create_organization_recipes` | `POST /orgs/{organization}/recipes` | Create recipe | **confirm** |
 | `get_recipes` | `GET /orgs/{organization}/recipes/{recipe}` | Get recipe | — |
-| `update_recipes` | `PUT /orgs/{organization}/recipes/{recipe}` | Update recipe | — |
+| `update_recipes` | `PUT /orgs/{organization}/recipes/{recipe}` | Update recipe | **confirm** |
 | `delete_recipes` | `DELETE /orgs/{organization}/recipes/{recipe}` | Delete recipe | — |
 | `list_recipes_runs` | `GET /orgs/{organization}/recipes/{recipe}/runs` | List recipe runs | — |
-| `create_recipes_runs` | `POST /orgs/{organization}/recipes/{recipe}/runs` | Create recipe run | async, pollable (status) |
+| `create_recipes_runs` | `POST /orgs/{organization}/recipes/{recipe}/runs` | Create recipe run | **destructive**, async, pollable (status) |
 | `get_recipes_runs` | `GET /orgs/{organization}/recipes/{recipe}/runs/{log}` | Get recipe run | — |
 | `list_teams_recipes` | `GET /orgs/{organization}/teams/{team}/recipes` | List team recipes | — |
 | `create_teams_recipes` | `POST /orgs/{organization}/teams/{team}/recipes` | Share recipe with the team | **destructive** |
 | `delete_teams_recipes` | `DELETE /orgs/{organization}/teams/{team}/recipes/{recipe}` | Delete a recipe share | **destructive** |
 | `list_forge_recipes` | `GET /forge-recipes` | List Forge's recipes | — |
 | `get_forge_recipes` | `GET /forge-recipes/{forgeRecipe}` | Get Forge recipe | — |
-| `create_forge_recipes_runs` | `POST /forge-recipes/{forgeRecipe}/runs` | Create Forge recipe run | async |
+| `create_forge_recipes_runs` | `POST /forge-recipes/{forgeRecipe}/runs` | Create Forge recipe run | **confirm**, async |
 
 ### Redirect Rules
 
@@ -344,7 +354,7 @@ Forge documentation: https://forge.laravel.com/docs/ssh
 | `get_servers_ssh_keys` | `GET /orgs/{organization}/servers/{server}/ssh-keys/{key}` | Get server SSH key | — |
 | `delete_servers_ssh_keys` | `DELETE /orgs/{organization}/servers/{server}/ssh-keys/{key}` | Delete server SSH key | **destructive**, async, pollable (absence) |
 | `get_servers_key` | `GET /orgs/{organization}/servers/{server}/key` | Get server public SSH key | — |
-| `update_servers_key` | `PUT /orgs/{organization}/servers/{server}/key` | Update server public SSH key | — |
+| `update_servers_key` | `PUT /orgs/{organization}/servers/{server}/key` | Update server public SSH key | **confirm** |
 
 ### Scheduled Jobs
 
@@ -470,7 +480,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `get_servers_sites_healthcheck` | `GET /orgs/{organization}/servers/{server}/sites/{site}/healthcheck` | Get healthcheck endpoint | — |
 | `update_servers_sites_healthcheck` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/healthcheck` | Update healthcheck endpoint | — |
 | `get_servers_sites_environment` | `GET /orgs/{organization}/servers/{server}/sites/{site}/environment` | Get .env content | — |
-| `update_servers_sites_environment` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/environment` | Update .env content | async |
+| `update_servers_sites_environment` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/environment` | Update .env content | **confirm**, async |
 | `get_servers_sites_nginx` | `GET /orgs/{organization}/servers/{server}/sites/{site}/nginx` | Get Nginx configuration | — |
 | `update_servers_sites_nginx` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/nginx` | Update Nginx configuration | **confirm**, async |
 | `list_servers_sites_composer_credentials` | `GET /orgs/{organization}/servers/{server}/sites/{site}/composer/credentials` | Get composer credentials for the site | — |
@@ -484,7 +494,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/the-basics
 | `update_servers_sites_npm_credentials` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/npm/credentials/{registry}` | Update NPM credentials for the site | async |
 | `delete_servers_sites_npm_credentials` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/npm/credentials/{registry}` | Delete npm credentials for the site | async, pollable (absence) |
 | `list_servers_sites_load_balancing_nodes` | `GET /orgs/{organization}/servers/{server}/sites/{site}/load-balancing-nodes` | List load balancing nodes | — |
-| `update_servers_sites_load_balancing_nodes` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/load-balancing-nodes` | Update load balancing nodes | async |
+| `update_servers_sites_load_balancing_nodes` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/load-balancing-nodes` | Update load balancing nodes | **confirm**, async |
 | `get_servers_sites_logs_nginx_access` | `GET /orgs/{organization}/servers/{server}/sites/{site}/logs/nginx-access` | Get Nginx access log content | — |
 | `delete_servers_sites_logs_nginx_access` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/logs/nginx-access` | Delete Nginx access log content | async |
 | `get_servers_sites_logs_nginx_error` | `GET /orgs/{organization}/servers/{server}/sites/{site}/logs/nginx-error` | Get Nginx error log content | — |

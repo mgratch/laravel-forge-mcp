@@ -83,7 +83,9 @@ export function createServer(options: CreateServerOptions): CreatedServer {
         title: tool.title,
         readOnlyHint: tool.descriptor.method === 'GET',
         destructiveHint: tool.descriptor.destructive,
-        idempotentHint: ['GET', 'PUT', 'DELETE'].includes(tool.descriptor.method),
+        // Same generated fact the retry layer uses, so what clients are told
+        // and what the client does cannot drift.
+        idempotentHint: tool.descriptor.idempotent,
         openWorldHint: true,
       },
     })),

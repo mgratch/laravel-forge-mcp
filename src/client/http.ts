@@ -42,6 +42,16 @@ export interface RequestOptions {
   readonly query?: Record<string, string | number | boolean | undefined>;
   readonly body?: unknown;
   readonly signal?: AbortSignal;
+  /**
+   * Whether repeating this request has the same effect as sending it once.
+   *
+   * Defaults to the RFC 9110 reading of the method. Callers that know better
+   * override it: Forge uses PUT for two credential *regenerations*, where a
+   * retry after an ambiguous failure mints a second credential.
+   *
+   * @see https://www.rfc-editor.org/rfc/rfc9110#name-idempotent-methods
+   */
+  readonly idempotent?: boolean;
 }
 
 /** A single API response, after normalisation. */
@@ -104,7 +114,12 @@ export class ForgeClient {
       } catch (error) {
         lastError = error;
 
-        if (!isSafeToRetry(error, options.method) || attempt === this.maxRetries) throw error;
+        if (
+          !isSafeToRetry(error, options.method, options.idempotent) ||
+          attempt === this.maxRetries
+        ) {
+          throw error;
+        }
       }
     }
 
@@ -363,8 +378,8 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
  * A 429 is different: the request was *rejected* without being processed, so
  * repeating it is safe for any method.
  */
-function isSafeToRetry(error: unknown, method: string): boolean {
-  const idempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
+function isSafeToRetry(error: unknown, method: string, override?: boolean): boolean {
+  const idempotent = override ?? IDEMPOTENT_METHODS.has(method.toUpperCase());
 
   if (error instanceof ForgeApiError) {
     if (error.status === 429) return true;

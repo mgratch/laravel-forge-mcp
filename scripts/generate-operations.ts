@@ -33,6 +33,9 @@ const OUT_PATH = resolve(HERE, '../src/generated/operations.ts');
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
 
+/** Methods RFC 9110 defines as idempotent, before per-operation corrections. */
+const IDEMPOTENT_METHODS = new Set(['get', 'put', 'delete']);
+
 /**
  * Operations that destroy infrastructure or irreversibly remove data.
  *
@@ -86,6 +89,8 @@ const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.versions.destroy',
   // Deploy key removal breaks future deployments for the site.
   'organizations.servers.sites.deploy-key.destroy',
+  'organizations.servers.sites.commands.store',
+  'organizations.recipes.runs.store',
 ]);
 
 /**
@@ -144,6 +149,14 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.versions.configs.cli.update',
 
   // Team and access mutation — changes who can reach the infrastructure.
+  'forge-recipes.runs.store',
+  'organization.recipes.store',
+  'organizations.recipes.update',
+  'organizations.servers.key.update',
+  'organizations.servers.sites.deployments.deploy-hook.update',
+  'organizations.servers.sites.deployments.script.update',
+  'organizations.servers.sites.environment.update',
+  'organizations.servers.sites.load-balancing-nodes.update',
 ]);
 
 /**
@@ -164,11 +177,7 @@ const CONFIRM_REQUIRED_OPERATION_IDS = new Set<string>([
  * not interrupt a running service.
  */
 const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
-  'forge-recipes.runs.store',
-  'organization.recipes.store',
   'organizations.recipes.destroy',
-  'organizations.recipes.runs.store',
-  'organizations.recipes.update',
   'organizations.server-credentials.vpcs.store',
   'organizations.servers.background-processes.store',
   'organizations.servers.background-processes.update',
@@ -181,7 +190,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.database.users.store',
   'organizations.servers.database.users.update',
   'organizations.servers.firewall-rules.store',
-  'organizations.servers.key.update',
   'organizations.servers.logs.destroy',
   'organizations.servers.monitors.destroy',
   'organizations.servers.monitors.store',
@@ -197,20 +205,16 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.versions.update',
   'organizations.servers.scheduled-jobs.store',
   'organizations.servers.sites.commands.destroy',
-  'organizations.servers.sites.commands.store',
   'organizations.servers.sites.composer.credentials.destroy',
   'organizations.servers.sites.composer.credentials.store',
   'organizations.servers.sites.composer.credentials.update',
   'organizations.servers.sites.deploy-key.store',
-  'organizations.servers.sites.deployments.deploy-hook.update',
   'organizations.servers.sites.deployments.push-to-deploy.store',
-  'organizations.servers.sites.deployments.script.update',
   'organizations.servers.sites.deployments.status.destroy',
   'organizations.servers.sites.deployments.store',
   'organizations.servers.sites.domains.certificates.store',
   'organizations.servers.sites.domains.store',
   'organizations.servers.sites.domains.update',
-  'organizations.servers.sites.environment.update',
   'organizations.servers.sites.healthcheck.update',
   'organizations.servers.sites.heartbeats.destroy',
   'organizations.servers.sites.heartbeats.store',
@@ -222,7 +226,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.sites.integrations.octane.store',
   'organizations.servers.sites.integrations.pulse.store',
   'organizations.servers.sites.integrations.reverb.store',
-  'organizations.servers.sites.load-balancing-nodes.update',
   'organizations.servers.sites.logs.application.destroy',
   'organizations.servers.sites.logs.nginx-access.destroy',
   'organizations.servers.sites.logs.nginx-error.destroy',
@@ -246,6 +249,47 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
 ]);
 
 /**
+ * Operations whose HTTP verb overstates their safety to retry.
+ *
+ * RFC 9110 lets a client retry an idempotent method after an ambiguous failure,
+ * because repeating it has the same effect as sending it once. Forge breaks
+ * that assumption for two PUTs: both *regenerate* a credential, so a retry
+ * after a network drop or a 5xx mints a second one and may invalidate the first
+ * response the caller never saw.
+ *
+ * Retry safety is therefore an operation-level fact, not a property of the
+ * verb — and the same fact drives the `idempotentHint` advertised to MCP
+ * clients, so behaviour and metadata cannot drift.
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc9110#name-idempotent-methods
+ */
+const NON_IDEMPOTENT_OPERATION_IDS = new Set<string>([
+  // Regenerates the server's SSH key pair and returns the new public key.
+  'organizations.servers.key.update',
+  // Regenerates the deployment-hook token used to trigger deployments.
+  'organizations.servers.sites.deployments.deploy-hook.update',
+]);
+
+/**
+ * Confirmation-target fields whose value is hashed rather than echoed.
+ *
+ * A confirmation phrase has to bind the *payload* for an operation whose
+ * payload is the danger: approving "run a command" means nothing if the command
+ * can change between the approval and the request. Echoing it verbatim is not
+ * an option either — a deployment script or a whole `.env` would make an
+ * unusable phrase, and `.env` content is secret by definition.
+ *
+ * So these fields contribute a short SHA-256 prefix instead. Changing so much
+ * as one character changes the digest, which invalidates the confirmation.
+ */
+const CONFIRMATION_DIGEST_FIELDS: ReadonlySet<string> = new Set([
+  'command',
+  'content',
+  'environment',
+  'script',
+]);
+
+/**
  * Body fields that identify or change the target of a guarded operation.
  *
  * Path parameters alone are not enough. Several guarded operations select their
@@ -261,6 +305,18 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
  * destructive operation cannot ship with an unbound confirmation.
  */
 const CONFIRMATION_TARGET_FIELDS: Record<string, readonly string[]> = {
+  // The payload *is* the hazard for these: an arbitrary shell command, an
+  // arbitrary recipe script, a deployment script, a whole `.env`. Each is bound
+  // by digest so the approved bytes are the executed bytes.
+  'organizations.servers.sites.commands.store': ['command'],
+  'organization.recipes.store': ['name', 'script'],
+  'organizations.recipes.update': ['script'],
+  'organizations.servers.sites.deployments.script.update': ['content'],
+  'organizations.servers.sites.environment.update': ['environment'],
+  // A recipe run's hazard is *where* it runs, so the phrase names the servers.
+  'organizations.recipes.runs.store': ['servers'],
+  'forge-recipes.runs.store': ['servers'],
+
   // Detaching vs destroying is a query argument, and changes the consequence.
   'organizations.servers.destroy': ['preserve_at_provider'],
   // Target server lives in the body, not the path.
@@ -1093,6 +1149,7 @@ function main(): void {
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
           `    confirmationTargetFields: ${JSON.stringify(targetFields)},`,
+          `    idempotent: ${IDEMPOTENT_METHODS.has(method) && !NON_IDEMPOTENT_OPERATION_IDS.has(operationId)},`,
           `    polling: ${formatPollingPlan(pollingPlan)},`,
           `    destructive: ${isDestructive},`,
           `    requiresConfirm: ${requiresConfirm},`,
@@ -1108,6 +1165,7 @@ function main(): void {
     ...DESTRUCTIVE_OPERATION_IDS,
     ...CONFIRM_REQUIRED_OPERATION_IDS,
     ...REVIEWED_SAFE_MUTATION_OPERATION_IDS,
+    ...NON_IDEMPOTENT_OPERATION_IDS,
   ]) {
     if (!seenOperationIds.has(id)) {
       throw new Error(
@@ -1240,6 +1298,18 @@ ${pendingEntries}
  */
 export const DEFAULT_PENDING_STATUSES: readonly string[] = ${JSON.stringify(
     [...defaultPending].sort(),
+  )};
+
+/**
+ * Confirmation-target fields bound by SHA-256 digest rather than by value.
+ *
+ * Used where the payload is the hazard — an arbitrary command, a recipe script,
+ * a deployment script, a whole \`.env\` — so that changing the payload
+ * invalidates the confirmation, without putting secret or unwieldy content into
+ * the phrase.
+ */
+export const CONFIRMATION_DIGEST_FIELDS: readonly string[] = ${JSON.stringify(
+    [...CONFIRMATION_DIGEST_FIELDS].sort(),
   )};
 
 /** Every operation in the Forge API, in document order. */
