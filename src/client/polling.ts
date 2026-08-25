@@ -1,9 +1,11 @@
 /**
  * Polling helper for asynchronous Forge operations.
  *
- * 105 of the API's 273 operations answer `202 Accepted` and finish in the
- * background, usually with no response body. Callers observe completion by
- * re-reading the affected resource until its state settles.
+ * 105 of the API's 273 operations are marked asynchronous; 98 of those answer
+ * `202 Accepted` and finish in the background, usually with no response body,
+ * while the remaining seven document a 200 or 204 and complete inline. Callers
+ * observe completion by re-reading the affected resource until its state
+ * settles.
  *
  * @see https://forge.laravel.com/docs/api-reference/introduction
  *

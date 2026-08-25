@@ -5,7 +5,7 @@
 Every tool below maps to exactly one operation in the [Laravel Forge API](https://forge.laravel.com/docs/api-reference/introduction).
 
 - **273** tools total
-- **105** are asynchronous; **43** of those expose a status that can be polled and accept `wait: true`
+- **105** are asynchronous; **40** of those expose a status that can be polled and accept `wait: true`
 - **28** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
 - **61** require a matching `confirm` argument
 
@@ -112,7 +112,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/background-process
 | `list_servers_background_processes` | `GET /orgs/{organization}/servers/{server}/background-processes` | List background processes | — |
 | `create_servers_background_processes` | `POST /orgs/{organization}/servers/{server}/background-processes` | Create background process | async, pollable (status) |
 | `get_servers_background_processes` | `GET /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Get background process | — |
-| `update_servers_background_processes` | `PUT /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Update background process | async, pollable (status) |
+| `update_servers_background_processes` | `PUT /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Update background process | async |
 | `delete_servers_background_processes` | `DELETE /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}` | Delete background process | **confirm**, async, pollable (absence) |
 | `get_servers_background_processes_log` | `GET /orgs/{organization}/servers/{server}/background-processes/{backgroundProcess}/log` | Get background process log | — |
 
@@ -125,7 +125,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/database-backups
 | `list_servers_database_backups` | `GET /orgs/{organization}/servers/{server}/database/backups` | List backup configurations | — |
 | `create_servers_database_backups` | `POST /orgs/{organization}/servers/{server}/database/backups` | Create backup configuration | async, pollable (status) |
 | `get_servers_database_backups` | `GET /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}` | Get backup configuration | — |
-| `update_servers_database_backups` | `PUT /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}` | Update backup configuration | async, pollable (status) |
+| `update_servers_database_backups` | `PUT /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}` | Update backup configuration | async |
 | `delete_servers_database_backups` | `DELETE /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}` | Delete backup configuration | **destructive**, async, pollable (absence) |
 | `list_servers_database_backups_instances` | `GET /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}/instances` | List backups | — |
 | `create_servers_database_backups_instances` | `POST /orgs/{organization}/servers/{server}/database/backups/{backupConfiguration}/instances` | Create backup | async, pollable (status) |
@@ -159,7 +159,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/databases
 | `list_servers_database_users` | `GET /orgs/{organization}/servers/{server}/database/users` | List database users | — |
 | `create_servers_database_users` | `POST /orgs/{organization}/servers/{server}/database/users` | Create database user | async, pollable (status) |
 | `get_servers_database_users` | `GET /orgs/{organization}/servers/{server}/database/users/{databaseUser}` | Get database user | — |
-| `update_servers_database_users` | `PUT /orgs/{organization}/servers/{server}/database/users/{databaseUser}` | Update database user | async, pollable (status) |
+| `update_servers_database_users` | `PUT /orgs/{organization}/servers/{server}/database/users/{databaseUser}` | Update database user | async |
 | `delete_servers_database_users` | `DELETE /orgs/{organization}/servers/{server}/database/users/{databaseUser}` | Delete database user | **destructive**, async, pollable (absence) |
 | `update_servers_database_password` | `PUT /orgs/{organization}/servers/{server}/database/password` | Update the password for the database | — |
 
@@ -176,7 +176,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/deployments
 | `list_servers_sites_deployments` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments` | List deployments | — |
 | `create_servers_sites_deployments` | `POST /orgs/{organization}/servers/{server}/sites/{site}/deployments` | Create deployment | async, pollable (status) |
 | `get_servers_sites_deployments_status` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/status` | Get deployment status | — |
-| `delete_servers_sites_deployments_status` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/status` | Update deployment state | async |
+| `delete_servers_sites_deployments_status` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/deployments/status` | Update deployment state | async, pollable (status) |
 | `get_servers_sites_deployments_script` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` | Get deployment script | — |
 | `update_servers_sites_deployments_script` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/deployments/script` | Update deployment script | — |
 | `get_servers_sites_deployments_deploy_hook` | `GET /orgs/{organization}/servers/{server}/sites/{site}/deployments/deploy-hook` | Get the deployment trigger URL | — |
@@ -220,7 +220,7 @@ Forge documentation: https://forge.laravel.com/docs/resources/network
 | `delete_servers_sites_integrations_pulse` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/pulse` | Delete Laravel Pulse integration | **confirm**, async |
 | `get_servers_sites_integrations_laravel_maintenance` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Get Laravel Maintenance integration status | — |
 | `create_servers_sites_integrations_laravel_maintenance` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Create Laravel Maintenance integration | **confirm**, async, pollable (status) |
-| `delete_servers_sites_integrations_laravel_maintenance` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Delete Laravel Maintenance integration | async |
+| `delete_servers_sites_integrations_laravel_maintenance` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-maintenance` | Delete Laravel Maintenance integration | async, pollable (status) |
 | `get_servers_sites_integrations_laravel_scheduler` | `GET /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Get Laravel Scheduler integration job | — |
 | `create_servers_sites_integrations_laravel_scheduler` | `POST /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Create Laravel Scheduler integration job | async |
 | `delete_servers_sites_integrations_laravel_scheduler` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/integrations/laravel-scheduler` | Delete Laravel Scheduler integration job | **confirm**, async |
@@ -372,7 +372,7 @@ Forge documentation: https://forge.laravel.com/docs/sites/network
 | `list_servers_sites_security_rules` | `GET /orgs/{organization}/servers/{server}/sites/{site}/security-rules` | List site security rules | — |
 | `create_servers_sites_security_rules` | `POST /orgs/{organization}/servers/{server}/sites/{site}/security-rules` | Create site security rule | async, pollable (status) |
 | `get_servers_sites_security_rules` | `GET /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Get site security rule | — |
-| `update_servers_sites_security_rules` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Update site security rule | async, pollable (status) |
+| `update_servers_sites_security_rules` | `PUT /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Update site security rule | async |
 | `delete_servers_sites_security_rules` | `DELETE /orgs/{organization}/servers/{server}/sites/{site}/security-rules/{securityRule}` | Delete site security rule | **confirm**, async, pollable (absence) |
 
 ### Server Credentials
@@ -417,7 +417,7 @@ Forge documentation: https://forge.laravel.com/docs/servers/the-basics
 | `list_servers_php_versions` | `GET /orgs/{organization}/servers/{server}/php/versions` | List PHP versions for server | — |
 | `create_servers_php_versions` | `POST /orgs/{organization}/servers/{server}/php/versions` | Install new PHP version | async, pollable (status) |
 | `get_servers_php_versions` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Get PHP version | — |
-| `update_servers_php_versions` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Update installed PHP version | async, pollable (status) |
+| `update_servers_php_versions` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Update installed PHP version | async |
 | `delete_servers_php_versions` | `DELETE /orgs/{organization}/servers/{server}/php/versions/{phpVersion}` | Delete installed PHP version | **destructive**, async, pollable (absence) |
 | `get_servers_php_versions_configs_fpm` | `GET /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` | Get PHP version FPM config | — |
 | `update_servers_php_versions_configs_fpm` | `PUT /orgs/{organization}/servers/{server}/php/versions/{phpVersion}/configs/fpm` | Update PHP version FPM config | **confirm**, async |

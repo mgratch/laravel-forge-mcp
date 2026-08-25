@@ -72,6 +72,24 @@ export interface PollingPlan {
    * case the default vocabulary applies.
    */
   readonly resourceType?: string;
+  /**
+   * Postcondition proving *this* invocation took effect.
+   *
+   * A `202` says Forge accepted the work, not that it has begun. Polling a
+   * resource that already existed can otherwise read its pre-operation steady
+   * state and mistake it for completion — enabling maintenance mode reads
+   * `enabled: false` before it reads `enabling`. Creates cannot hit this (the
+   * resource is new) and deletions cannot either (a 404 is unambiguous), so
+   * this is set exactly on the mutations that need it, and the generator
+   * refuses to plan such an operation without one.
+   */
+  readonly expect?: { readonly field: string; readonly equals: unknown };
+  /** How long to keep polling before giving up. */
+  readonly timeoutMs: number;
+  /** Delay between the first two polls. */
+  readonly initialIntervalMs: number;
+  /** Upper bound on the backoff interval. */
+  readonly maxIntervalMs: number;
 }
 
 /**

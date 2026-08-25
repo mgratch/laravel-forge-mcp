@@ -55,6 +55,8 @@ Generate a token at [forge.laravel.com/profile/api](https://forge.laravel.com/pr
 | `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                                    |
 | `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                                                  |
 | `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                                             |
+| `FORGE_POLL_TIMEOUT_MS`       | no       | per operation                   | Overrides the polling budget. Defaults to 30 min for server provisioning, 2 min elsewhere.                                            |
+| `FORGE_POLL_INTERVAL_MS`      | no       | per operation                   | Overrides the initial polling interval.                                                                                               |
 
 ## Safety model
 
@@ -111,14 +113,14 @@ See [`docs/TOOLS.md`](docs/TOOLS.md) for the full catalog, including which tools
 
 ## What the client handles for you
 
-| Concern                                                                          | Behaviour                                                                                                                                                             |
-| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                                                   |
-| [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations return `202 Accepted`. `wait: true` is advertised only where the spec shows a way to observe completion, so no tool promises a wait it cannot perform. |
-| [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                                                  |
-| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                                                         |
-| Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.                                        |
-| Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                                                    |
+| Concern                                                                          | Behaviour                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                                                                                                                                                               |
+| [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations are marked asynchronous; 98 answer `202 Accepted` and seven complete inline with a 200 or 204. `wait: true` is advertised only where the spec shows a way to observe completion _and_ to prove the call took effect, so no tool promises a wait it cannot perform. |
+| [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                                                                                                                                                              |
+| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                                                                                                                                                                     |
+| Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.                                                                                                                                                    |
+| Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                                                                                                                                                                |
 
 ## Examples
 
@@ -163,7 +165,7 @@ Deploy and wait for the result:
 ```
 
 `wait: true` is offered only where the OpenAPI document shows a way to observe
-completion — 43 of the API's 105 asynchronous operations. The generator emits a
+completion — 40 of the API's 105 asynchronous operations. The generator emits a
 per-operation plan naming the path to read, the placeholder the created
 resource's id fills, and how completion is recognised:
 
@@ -175,8 +177,17 @@ resource's id fills, and how completion is recognised:
 
 Status vocabularies are per resource because Forge reuses the strings: `running`
 is the healthy steady state of a background process but an in-flight command.
-Everything without a plan tells you what to re-read instead of pretending to
-wait.
+
+A `202` only says Forge accepted the work, so polling a resource that already
+existed can read its _pre-operation_ state and mistake it for completion —
+enabling maintenance mode reads `enabled: false` before it reads `enabling`. A
+status plan therefore either targets a resource the call created, or carries a
+postcondition proving the call landed. Operations with neither do not offer
+`wait` at all; they tell you what to re-read instead of pretending to wait.
+
+Budgets are per operation. Server provisioning gets thirty minutes and backs off
+to a two-minute cadence, matching Forge's own guidance; everything else gets two
+minutes. `FORGE_POLL_TIMEOUT_MS` and `FORGE_POLL_INTERVAL_MS` override both.
 
 Run a command and collect its output:
 
@@ -215,13 +226,27 @@ npm run build
 ### Updating to a newer Forge API
 
 ```bash
-curl -o spec/forge.openapi.json https://forge.laravel.com/api/docs.openapi
-npm run generate && npm run docs && npm run check
+npm run refresh-spec
+npm run check
 ```
 
-Generation fails if a guarded `operationId` has disappeared, which is deliberate: it forces a human
-to re-check the safety classification instead of shipping an unguarded destructive tool. CI also
-fails when the committed generated files are stale.
+`refresh-spec` is the whole pipeline: it downloads the document, validates it, replaces
+`spec/forge.openapi.json` atomically so a failed download cannot leave a truncated spec behind, then
+regenerates the operation table and `docs/TOOLS.md`. Do not hand-roll the `curl` — that skips the
+validation and the atomic write.
+
+It fails closed, on purpose, rather than shipping something unsafe or unpollable:
+
+| Failure               | Meaning                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| unclassified mutation | a new mutating operation is in neither the destructive nor the reviewed-safe table |
+| unknown `operationId` | a guarded operation was renamed or removed                                         |
+| unbound confirmation  | a guarded operation has no target to name in its confirmation phrase               |
+| unclassified status   | a resource gained a status value that is neither pending nor terminal              |
+| stale postcondition   | a polling postcondition names a field the resource no longer declares              |
+
+Each one wants a human to re-check a safety or correctness classification. CI also fails when the
+committed generated files are stale.
 
 ### Architecture
 
@@ -238,7 +263,7 @@ src/server.ts                MCP wiring: tools/list, tools/call, error mapping
 ## Contributing
 
 Issues and pull requests welcome. Please run `npm run check` before opening a PR — CI runs the same
-commands on Node 20 and 22, and additionally verifies that generated files are current.
+commands on Node 22 and 24, and additionally verifies that generated files are current.
 
 ## License
 

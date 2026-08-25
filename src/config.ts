@@ -18,6 +18,16 @@ export interface ServerConfig {
   readonly allowDestructive: boolean;
   readonly timeoutMs: number;
   readonly maxRetries: number;
+  /**
+   * Overrides the per-operation polling budget when set.
+   *
+   * Each operation carries its own default — server provisioning gets thirty
+   * minutes and a two-minute cadence, a config change gets two minutes — so
+   * these exist for slow providers and impatient operators, not for ordinary
+   * use.
+   */
+  readonly pollTimeoutMs: number | undefined;
+  readonly pollIntervalMs: number | undefined;
 }
 
 /**
@@ -57,6 +67,12 @@ function readInteger(value: string | undefined, fallback: number, label: string)
  * @param env Defaults to `process.env`; injectable for tests.
  * @throws {ForgeConfigurationError} when `FORGE_API_KEY` is absent.
  */
+/** Reads an optional positive integer, leaving the per-operation default in place when unset. */
+function readOptionalInteger(raw: string | undefined, name: string): number | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return readInteger(raw, 0, name);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const apiKey = env['FORGE_API_KEY']?.trim();
 
@@ -76,5 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     allowDestructive: readDestructiveFlag(env['FORGE_MCP_ALLOW_DESTRUCTIVE']),
     timeoutMs: readInteger(env['FORGE_TIMEOUT_MS'], 30_000, 'FORGE_TIMEOUT_MS'),
     maxRetries: readInteger(env['FORGE_MAX_RETRIES'], 3, 'FORGE_MAX_RETRIES'),
+    pollTimeoutMs: readOptionalInteger(env['FORGE_POLL_TIMEOUT_MS'], 'FORGE_POLL_TIMEOUT_MS'),
+    pollIntervalMs: readOptionalInteger(env['FORGE_POLL_INTERVAL_MS'], 'FORGE_POLL_INTERVAL_MS'),
   };
 }

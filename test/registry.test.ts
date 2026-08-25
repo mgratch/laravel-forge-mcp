@@ -13,7 +13,13 @@ const schemas = loadSpecSchemas();
 
 function makeRegistry(
   stub: ReturnType<typeof stubFetch>,
-  options: { organization?: string; allowDestructive?: boolean; only?: string[] } = {},
+  options: {
+    organization?: string;
+    allowDestructive?: boolean;
+    only?: string[];
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
 ): ReturnType<typeof buildToolRegistry> {
   const client = new ForgeClient({
     apiKey: 'test-token',
@@ -33,6 +39,8 @@ function makeRegistry(
     schemas,
     defaultOrganization: options.organization,
     allowDestructive: options.allowDestructive ?? false,
+    ...(options.sleep === undefined ? {} : { pollSleep: options.sleep }),
+    ...(options.now === undefined ? {} : { pollNow: options.now }),
   });
 }
 
@@ -306,11 +314,18 @@ describe('async operations', () => {
     const hasWait = (tool: (typeof tools)[number]): boolean =>
       (tool.inputSchema['properties'] as Record<string, unknown>)['wait'] !== undefined;
 
-    // An async PUT addresses the resource it changes, so it can be re-read.
-    const asyncPut = tools.find(
-      (tool) => tool.descriptor.processingMode === 'async' && tool.descriptor.method === 'PUT',
+    // A create can be re-read at the item route below the collection.
+    const asyncCreate = tools.find((tool) => tool.descriptor.polling?.idParam !== undefined);
+    expect(asyncCreate && hasWait(asyncCreate)).toBe(true);
+
+    // An async update rewrites a resource that already existed, so its first
+    // read can return the pre-operation steady state. Without a postcondition
+    // proving the call took effect, no wait is offered.
+    const unprovableUpdate = tools.find(
+      (tool) => tool.descriptor.operationId === 'organizations.servers.background-processes.update',
     );
-    expect(asyncPut && hasWait(asyncPut)).toBe(true);
+    expect(unprovableUpdate?.descriptor.processingMode).toBe('async');
+    expect(unprovableUpdate && hasWait(unprovableUpdate)).toBe(false);
 
     // Sync operations have nothing to wait for.
     const syncTool = tools.find((tool) => tool.descriptor.processingMode === 'sync');
@@ -343,28 +358,25 @@ describe('async operations', () => {
 
   it('polls a resource whose GET exposes a status, until it settles', async () => {
     const stub = stubFetch([
-      { status: 202 },
-      { body: jsonApiResource('backgroundProcesses', 1, { status: 'restarting' }) },
-      { body: jsonApiResource('backgroundProcesses', 1, { status: 'running' }) },
-      { body: jsonApiResource('backgroundProcesses', 1, { status: 'active' }) },
+      { status: 202, body: jsonApiResource('deployments', 1, {}) },
+      { body: jsonApiResource('deployments', 1, { status: 'queued' }) },
+      { body: jsonApiResource('deployments', 1, { status: 'deploying' }) },
+      { body: jsonApiResource('deployments', 1, { status: 'finished' }) },
     ]);
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
-      only: ['update_servers_background_processes'],
+      only: ['create_servers_sites_deployments'],
     });
-    const tool = tools.find((c) => c.name === 'update_servers_background_processes');
-    if (!tool) return;
+    const tool = findTool(tools, 'create_servers_sites_deployments');
 
-    const result = (await tool.handler({
-      server: 1,
-      backgroundProcess: 2,
-      name: 'worker',
-      wait: true,
-    })) as Record<string, unknown>;
+    const result = (await tool.handler({ server: 1, site: 2, wait: true })) as Record<
+      string,
+      unknown
+    >;
 
     const polled = result['polled'] as Record<string, unknown> | undefined;
-    expect(polled).toBeDefined();
+    expect(polled?.['status']).toBe('finished');
   }, 20_000);
 
   it('offers wait only where the spec exposes a pollable status', () => {
@@ -683,7 +695,12 @@ describe('polled response integrity', () => {
     // guard that skips when the chosen operation turns out to be pollable would
     // silently assert nothing.
     const nonPollable = OPERATIONS.find(
-      (op) => op.processingMode === 'async' && op.polling === undefined && !op.destructive,
+      (op) =>
+        op.processingMode === 'async' &&
+        op.polling === undefined &&
+        !op.destructive &&
+        !op.requiresConfirm &&
+        !op.bodyRequired,
     );
     expect(nonPollable, 'no non-pollable async operation in the catalog').toBeDefined();
 
@@ -792,6 +809,202 @@ describe('per-resource terminal semantics', () => {
   it('gives the two resources opposite verdicts on the same status string', () => {
     expect(PENDING_STATUSES['backgroundProcesses']).not.toContain('running');
     expect(PENDING_STATUSES['commands']).toContain('running');
+  });
+});
+
+describe('proof that the operation took effect', () => {
+  // A 202 says Forge accepted the work, not that it has started it. Polling a
+  // resource that already existed can read its pre-operation steady state and
+  // mistake it for completion.
+
+  it('does not accept the old maintenance-mode state as an enable completing', async () => {
+    const stub = stubFetch([
+      { status: 202 },
+      // Pre-operation: mode off, no transition running. Terminal by status
+      // alone, which is exactly the trap.
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: false,
+          status: null,
+        }),
+      },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: false,
+          status: 'enabling',
+        }),
+      },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: true,
+          status: null,
+        }),
+      },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_sites_integrations_laravel_maintenance'],
+    });
+    const tool = findTool(tools, 'create_servers_sites_integrations_laravel_maintenance');
+
+    const result = (await tool.handler({
+      server: 1,
+      site: 2,
+      status: 503,
+      confirm: 'create_servers_sites_integrations_laravel_maintenance server=1 site=2',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    // Four requests: settling on the first read would have made two.
+    expect(stub.requests).toHaveLength(4);
+    expect((result['data'] as Record<string, unknown>)['enabled']).toBe(true);
+  }, 30_000);
+
+  it('withholds wait from an update whose effect it cannot prove', () => {
+    // `update_servers_background_processes` is async, and its resource reports a
+    // status — but `running` is that resource's healthy steady state both
+    // before and after the write, and the resource exposes no `updated_at`. A
+    // wait here could only guess.
+    const update = OPERATIONS.find(
+      (op) => op.operationId === 'organizations.servers.background-processes.update',
+    );
+
+    expect(update?.processingMode).toBe('async');
+    expect(update?.polling).toBeUndefined();
+  });
+
+  it('requires a postcondition on every status plan for a pre-existing resource', () => {
+    for (const operation of OPERATIONS) {
+      const plan = operation.polling;
+      if (!plan || plan.completion === 'absence') continue;
+
+      // Either the poll targets a resource this call created, or it carries
+      // proof the call landed.
+      const provable = plan.idParam !== undefined || plan.expect !== undefined;
+      expect(provable, `${operation.name} can settle on a stale state`).toBe(true);
+    }
+  });
+});
+
+describe('state-clearing operations', () => {
+  it('polls a deployment-state reset by status rather than absence', async () => {
+    const reset = OPERATIONS.find(
+      (op) => op.operationId === 'organizations.servers.sites.deployments.status.destroy',
+    );
+
+    expect(reset?.polling?.completion).toBe('status');
+    expect(reset?.polling?.expect).toEqual({ field: 'status', equals: null });
+
+    const stub = stubFetch([
+      { status: 202 },
+      { body: jsonApiResource('deploymentStatuses', 1, { status: 'deploying' }) },
+      { body: jsonApiResource('deploymentStatuses', 1, { status: null }) },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: [(reset as OperationDescriptor).name],
+    });
+    const tool = findTool(tools, (reset as OperationDescriptor).name);
+
+    await tool.handler({ server: 1, site: 2, wait: true });
+
+    expect(stub.requests).toHaveLength(3);
+  }, 30_000);
+
+  it('polls a maintenance-mode disable to enabled false', async () => {
+    const disable = OPERATIONS.find(
+      (op) =>
+        op.operationId === 'organizations.servers.sites.integrations.laravel-maintenance.destroy',
+    );
+
+    expect(disable?.polling?.expect).toEqual({ field: 'enabled', equals: false });
+
+    const stub = stubFetch([
+      { status: 202 },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: true,
+          status: 'disabling',
+        }),
+      },
+      {
+        body: jsonApiResource('laravelMaintenanceIntegrations', 1, {
+          enabled: false,
+          status: null,
+        }),
+      },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: [(disable as OperationDescriptor).name],
+    });
+    const tool = findTool(tools, (disable as OperationDescriptor).name);
+
+    await tool.handler({ server: 1, site: 2, wait: true });
+
+    expect(stub.requests).toHaveLength(3);
+  }, 30_000);
+});
+
+describe('polling budgets', () => {
+  it('gives server provisioning a budget that outlasts a real provision', () => {
+    const create = OPERATIONS.find((op) => op.operationId === 'organizations.servers.store');
+
+    // Forge documents ordinary provisioning at roughly ten minutes and
+    // recommends polling about every two minutes.
+    expect(create?.polling?.completion).toBe('readiness');
+    expect(create?.polling?.timeoutMs).toBeGreaterThanOrEqual(600_000);
+    expect(create?.polling?.maxIntervalMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('keeps the short budget for everything else', () => {
+    for (const operation of OPERATIONS) {
+      const plan = operation.polling;
+      if (!plan || plan.completion === 'readiness') continue;
+      expect(plan.timeoutMs, `${operation.name}`).toBe(120_000);
+    }
+  });
+
+  it('waits out a provision that takes longer than the old two-minute ceiling', async () => {
+    // A fake clock, so the test proves the budget rather than the wall clock.
+    // `is_ready` turns true after twenty simulated minutes.
+    let clock = 0;
+    const readyAt = 20 * 60_000;
+
+    const reads = { count: 0 };
+    const stub = stubFetch([{ status: 202, body: jsonApiResource('servers', 55, {}) }], {
+      fallback: () => {
+        reads.count += 1;
+        return { body: jsonApiResource('servers', 55, { is_ready: clock >= readyAt }) };
+      },
+    });
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers'],
+      sleep: (ms: number) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+      now: () => clock,
+    });
+    const tool = findTool(tools, 'create_servers');
+
+    const result = (await tool.handler({
+      name: 'web-1',
+      type: 'app',
+      provider: 'custom',
+      wait: true,
+    })) as Record<string, unknown>;
+
+    const polled = result['polled'] as Record<string, unknown>;
+    expect(polled['completion']).toBe('readiness');
+    expect(Number(polled['elapsedMs'])).toBeGreaterThan(120_000);
   });
 });
 

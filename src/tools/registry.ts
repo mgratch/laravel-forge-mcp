@@ -71,6 +71,12 @@ export interface RegistryOptions {
   readonly allowDestructive: boolean;
   /** Injectable validator, for tests. */
   readonly validator?: ArgumentValidator;
+  /** Overrides every operation's polling budget. See `ServerConfig`. */
+  readonly pollTimeoutMs?: number | undefined;
+  readonly pollIntervalMs?: number | undefined;
+  /** Injectable sleep and clock, so long-wait tests need no wall-clock time. */
+  readonly pollSleep?: (ms: number) => Promise<void>;
+  readonly pollNow?: () => number;
 }
 
 /** Path parameter carrying the organization slug throughout the API. */
@@ -197,7 +203,17 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
       inputSchema,
       descriptor,
       handler: async (args) =>
-        executeOperation({ descriptor, args, client, defaultOrganization, validator }),
+        executeOperation({
+          descriptor,
+          args,
+          client,
+          defaultOrganization,
+          validator,
+          pollTimeoutMs: options.pollTimeoutMs,
+          pollIntervalMs: options.pollIntervalMs,
+          pollSleep: options.pollSleep,
+          pollNow: options.pollNow,
+        }),
     });
   }
 
@@ -293,11 +309,25 @@ interface ExecuteOptions {
   readonly client: ForgeClient;
   readonly defaultOrganization: string | undefined;
   readonly validator: ArgumentValidator;
+  readonly pollTimeoutMs: number | undefined;
+  readonly pollIntervalMs: number | undefined;
+  readonly pollSleep: ((ms: number) => Promise<void>) | undefined;
+  readonly pollNow: (() => number) | undefined;
 }
 
 /** Runs one operation: validate guard, build the request, optionally poll. */
 async function executeOperation(options: ExecuteOptions): Promise<unknown> {
-  const { descriptor, args, client, defaultOrganization, validator } = options;
+  const {
+    descriptor,
+    args,
+    client,
+    defaultOrganization,
+    validator,
+    pollTimeoutMs,
+    pollIntervalMs,
+    pollSleep,
+    pollNow,
+  } = options;
 
   // Enforce the advertised schema before anything else. Without this the schema
   // is advisory and a raw client could smuggle a field the tool never exposed.
@@ -445,6 +475,13 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
       }
     },
     {
+      // Server provisioning runs an order of magnitude longer than a config
+      // change, so the budget is per operation rather than one global default.
+      timeoutMs: pollTimeoutMs ?? plan.timeoutMs,
+      initialIntervalMs: pollIntervalMs ?? plan.initialIntervalMs,
+      maxIntervalMs: Math.max(pollIntervalMs ?? plan.initialIntervalMs, plan.maxIntervalMs),
+      ...(pollSleep === undefined ? {} : { sleep: pollSleep }),
+      ...(pollNow === undefined ? {} : { now: pollNow }),
       // The status lives on the resource, not on the response envelope.
       readStatus: (value) => readStatus((value as ForgeResponse).data),
       // In absence mode a *missing* status means the resource is still there,
@@ -502,7 +539,22 @@ function buildTerminalPredicate(
     return (value) => readReadiness(value.data) === true;
   }
 
+  // A settled status is not enough on its own for a resource that already
+  // existed: its *previous* steady state settles too. The postcondition is what
+  // proves this call took effect.
+  const { expect } = plan;
+  if (expect !== undefined) {
+    return (value, status) =>
+      settles(status) && readField(value.data, expect.field) === expect.equals;
+  }
+
   return (_value, status) => settles(status);
+}
+
+/** Reads one flattened attribute, or undefined when the payload is not a single resource. */
+function readField(data: unknown, field: string): unknown {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  return (data as Record<string, unknown>)[field];
 }
 
 /** Reads the flattened `is_ready` attribute, when the resource has one. */

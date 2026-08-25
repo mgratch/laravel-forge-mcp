@@ -11,8 +11,8 @@ npm install
 npm run check
 ```
 
-`npm run check` runs format, lint, typecheck and tests — the same gate CI enforces on Node 20
-and 22.
+`npm run check` runs format, lint, typecheck and tests — the same gate CI enforces on Node 22
+and 24.
 
 ## The generated surface
 

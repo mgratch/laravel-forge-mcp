@@ -51,7 +51,20 @@ function readUrl(input: Parameters<typeof globalThis.fetch>[0]): string {
   return input.url;
 }
 
-export function stubFetch(responses: readonly StubResponse[]): FetchStub {
+export interface StubOptions {
+  /**
+   * Answers any request past the end of the queue.
+   *
+   * Needed by long-poll tests, where the number of reads depends on the
+   * backoff schedule rather than on a fixed script.
+   */
+  readonly fallback?: () => StubResponse;
+}
+
+export function stubFetch(
+  responses: readonly StubResponse[],
+  options: StubOptions = {},
+): FetchStub {
   const queue = [...responses];
   const requests: RecordedRequest[] = [];
 
@@ -79,7 +92,7 @@ export function stubFetch(responses: readonly StubResponse[]): FetchStub {
 
     requests.push({ url, method: init?.method ?? 'GET', headers, body: parsedBody });
 
-    const next = queue.shift();
+    const next = queue.shift() ?? options.fallback?.();
     if (next === undefined) {
       return Promise.reject(
         new Error(`stubFetch: unexpected request ${init?.method ?? 'GET'} ${url}`),

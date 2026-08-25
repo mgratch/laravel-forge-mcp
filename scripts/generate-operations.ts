@@ -571,6 +571,56 @@ function collectResourceVocabularies(
 }
 
 /**
+ * Postconditions that prove *this* invocation took effect.
+ *
+ * A `202` says Forge accepted the work, not that it has started it. Polling a
+ * resource that already existed can therefore read its *pre-operation* steady
+ * state and mistake it for completion: enabling maintenance mode reads
+ * `enabled: false` before it reads `enabling`, and both a settled status and a
+ * missing one look terminal.
+ *
+ * A create does not have this problem — the resource it polls did not exist
+ * before the call — and neither does a deletion, whose completion signal is an
+ * unambiguous 404. Every *other* status poll needs an operation-specific
+ * postcondition, and the generator refuses to emit a plan without one rather
+ * than advertise a `wait` that can return a false success.
+ *
+ * Values are compared against the flattened resource, so an attribute name is
+ * enough. `null` is a real expected value here: clearing a stuck deployment
+ * leaves `DeploymentStatusResource.status` null.
+ */
+const POLL_POSTCONDITIONS: Readonly<
+  Record<string, { readonly field: string; readonly equals: unknown }>
+> = {
+  'organizations.servers.sites.integrations.laravel-maintenance.store': {
+    field: 'enabled',
+    equals: true,
+  },
+  'organizations.servers.sites.integrations.laravel-maintenance.destroy': {
+    field: 'enabled',
+    equals: false,
+  },
+  'organizations.servers.sites.deployments.status.destroy': { field: 'status', equals: null },
+};
+
+/**
+ * How long to keep polling, per completion mode.
+ *
+ * Server provisioning is an order of magnitude slower than everything else:
+ * Forge's own API documentation puts ordinary provisioning at roughly ten
+ * minutes and recommends polling about every two minutes. The 120-second
+ * default that suits a config change would fail every real provision.
+ *
+ * @see https://forge.laravel.com/docs/servers/provisioning
+ */
+const POLL_TIMING: Readonly<
+  Record<string, { timeoutMs: number; initialIntervalMs: number; maxIntervalMs: number }>
+> = {
+  readiness: { timeoutMs: 1_800_000, initialIntervalMs: 15_000, maxIntervalMs: 120_000 },
+  default: { timeoutMs: 120_000, initialIntervalMs: 2_000, maxIntervalMs: 10_000 },
+};
+
+/**
  * The attribute Forge uses to signal that a provisioned resource is usable.
  *
  * `ServerResource` reports no `status`; provisioning finishes when `is_ready`
@@ -597,6 +647,11 @@ interface PollingPlan {
   readonly completion: PollCompletion;
   /** JSON:API resource type, selecting the status vocabulary. */
   readonly resourceType: string | undefined;
+  /** Postcondition proving this invocation took effect. See POLL_POSTCONDITIONS. */
+  readonly expect: { readonly field: string; readonly equals: unknown } | undefined;
+  readonly timeoutMs: number;
+  readonly initialIntervalMs: number;
+  readonly maxIntervalMs: number;
 }
 
 /** What a GET on some path reads back. */
@@ -690,6 +745,7 @@ function completionFor(target: ReadTarget): PollCompletion | undefined {
 function buildPollingPlan(
   path: string,
   method: string,
+  operationId: string,
   document: OpenApiDocument,
   schemas: Record<string, unknown>,
 ): PollingPlan | undefined {
@@ -701,18 +757,45 @@ function buildPollingPlan(
   // actually received; this keeps `wait` off the schema in the first place.
   if (document.paths[path]?.[method]?.responses?.['202'] === undefined) return undefined;
 
-  if (method === 'delete') {
-    // Only an item route addresses a resource that can actually disappear.
-    if (!path.endsWith('}')) return undefined;
-    const target = describeReadPath(path, document, schemas);
-    if (!target) return undefined;
+  const expect = POLL_POSTCONDITIONS[operationId];
 
-    return {
+  const timed = (
+    plan: Omit<PollingPlan, 'timeoutMs' | 'initialIntervalMs' | 'maxIntervalMs'>,
+  ): PollingPlan => ({
+    ...plan,
+    ...(POLL_TIMING[plan.completion] ?? POLL_TIMING['default']!),
+  });
+
+  if (method === 'delete') {
+    const target = describeReadPath(path, document, schemas);
+    if (!target || target.isCollection) return undefined;
+
+    // A path ending in a placeholder addresses one resource, so deleting it
+    // makes the resource disappear and a 404 is unambiguous completion.
+    if (path.endsWith('}')) {
+      return timed({
+        path,
+        idParam: undefined,
+        completion: 'absence',
+        resourceType: target.resourceType,
+        expect: undefined,
+      });
+    }
+
+    // Otherwise the DELETE clears state on an endpoint that keeps answering —
+    // resetting a stuck deployment, disabling an integration. Absence would
+    // never arrive, but the same GET may still expose the state to watch. It
+    // needs a postcondition, because the resource existed beforehand.
+    const completion = completionFor(target);
+    if (completion === undefined || expect === undefined) return undefined;
+
+    return timed({
       path,
       idParam: undefined,
-      completion: 'absence',
+      completion,
       resourceType: target.resourceType,
-    };
+      expect,
+    });
   }
 
   if (method === 'post') {
@@ -729,15 +812,26 @@ function buildPollingPlan(
 
     // Without an item route below it, the only readable path is the one posted
     // to. That is pollable when it reads back a single resource — an action
-    // endpoint such as `.../integrations/horizon` — but not when it reads back
-    // a list, which carries no status of its own and would look instantly
-    // finished.
+    // endpoint such as `.../integrations/laravel-maintenance` — but not when it
+    // reads back a list, which carries no status of its own and would look
+    // instantly finished.
     if (itemPath === undefined && target.isCollection) return undefined;
 
     const idParam =
       itemPath === undefined ? undefined : itemPath.slice(path.length + 2, itemPath.length - 1);
 
-    return { path: readPath, idParam, completion, resourceType: target.resourceType };
+    // A create polls a resource that did not exist before the call, so its
+    // first read cannot be a stale pre-operation state. An action endpoint
+    // rewrites something that did, and needs a postcondition.
+    if (idParam === undefined && expect === undefined) return undefined;
+
+    return timed({
+      path: readPath,
+      idParam,
+      completion,
+      resourceType: target.resourceType,
+      expect: idParam === undefined ? expect : undefined,
+    });
   }
 
   const target = describeReadPath(path, document, schemas);
@@ -751,12 +845,40 @@ function buildPollingPlan(
   // pointed at one could never terminate.
   if (target.isCollection) return undefined;
 
+  // An update rewrites a resource that already existed, so its status can read
+  // back as the pre-operation steady state. Without a postcondition proving
+  // this call took effect, no `wait` is advertised at all.
+  if (expect === undefined) return undefined;
+
   return {
-    path,
-    idParam: undefined,
-    completion,
-    resourceType: target.resourceType,
+    ...timed({
+      path,
+      idParam: undefined,
+      completion,
+      resourceType: target.resourceType,
+      expect,
+    }),
   };
+}
+
+/** Attribute names declared by a JSON:API resource type, for validating overrides. */
+function resourceAttributes(
+  resourceType: string | undefined,
+  schemas: Record<string, unknown>,
+): Set<string> | undefined {
+  if (resourceType === undefined) return undefined;
+
+  for (const schema of Object.values(schemas)) {
+    const properties = (schema as { properties?: Record<string, unknown> })?.properties;
+    const typeEnum = (properties?.['type'] as { enum?: string[] } | undefined)?.enum;
+    if (typeEnum?.[0] !== resourceType) continue;
+
+    const attributes = (properties?.['attributes'] as { properties?: Record<string, unknown> })
+      ?.properties;
+    if (attributes) return new Set(Object.keys(attributes));
+  }
+
+  return undefined;
 }
 
 /** Serialises a polling plan into the generated file, omitting absent fields. */
@@ -769,6 +891,16 @@ function formatPollingPlan(plan: PollingPlan | undefined): string {
   if (plan.resourceType !== undefined) {
     parts.push(`resourceType: ${JSON.stringify(plan.resourceType)}`);
   }
+  if (plan.expect !== undefined) {
+    parts.push(
+      `expect: { field: ${JSON.stringify(plan.expect.field)}, equals: ${JSON.stringify(
+        plan.expect.equals,
+      )} }`,
+    );
+  }
+  parts.push(`timeoutMs: ${plan.timeoutMs}`);
+  parts.push(`initialIntervalMs: ${plan.initialIntervalMs}`);
+  parts.push(`maxIntervalMs: ${plan.maxIntervalMs}`);
 
   return `{ ${parts.join(', ')} }`;
 }
@@ -831,6 +963,7 @@ function main(): void {
   let destructiveCount = 0;
   let asyncCount = 0;
   let pollableCount = 0;
+  const postconditionPlans = new Map<string, PollingPlan>();
   let confirmCount = 0;
   const unclassifiedMutations: string[] = [];
   const doubleClassified: string[] = [];
@@ -914,11 +1047,14 @@ function main(): void {
       // Only asynchronous operations are ever polled, so only they carry a plan.
       const isAsync = operation['x-processingMode'] === 'async';
       const pollingPlan = isAsync
-        ? buildPollingPlan(path, method, spec, schemaComponents)
+        ? buildPollingPlan(path, method, operationId, spec, schemaComponents)
         : undefined;
       if (isAsync) {
         asyncCount += 1;
-        if (pollingPlan) pollableCount += 1;
+        if (pollingPlan) {
+          pollableCount += 1;
+          if (pollingPlan.expect !== undefined) postconditionPlans.set(operationId, pollingPlan);
+        }
       }
 
       const summary = operation.summary ?? operationId;
@@ -1024,6 +1160,35 @@ function main(): void {
       `${doubleClassified.length} operation(s) appear in more than one classification table:\n` +
         doubleClassified.map((id) => `  - ${id}`).join('\n'),
     );
+  }
+
+  // A postcondition naming an operation or field the spec no longer has would
+  // silently never be satisfied, turning every `wait: true` on it into a
+  // timeout.
+  for (const [operationId, condition] of Object.entries(POLL_POSTCONDITIONS)) {
+    if (!seenOperationIds.has(operationId)) {
+      throw new Error(
+        `POLL_POSTCONDITIONS references unknown operationId "${operationId}". ` +
+          'The Forge spec changed — re-check the table in scripts/generate-operations.ts.',
+      );
+    }
+
+    const plan = postconditionPlans.get(operationId);
+    if (!plan) {
+      throw new Error(
+        `POLL_POSTCONDITIONS names "${operationId}", which no longer produces a polling plan. ` +
+          'Remove the entry or restore the plan.',
+      );
+    }
+
+    const attributes = resourceAttributes(plan.resourceType, schemaComponents);
+    if (attributes !== undefined && !attributes.has(condition.field)) {
+      throw new Error(
+        `POLL_POSTCONDITIONS expects "${operationId}" to settle on "${condition.field}", which ` +
+          `"${plan.resourceType ?? 'the polled resource'}" does not declare. A postcondition ` +
+          'that can never be satisfied turns every wait into a timeout.',
+      );
+    }
   }
 
   const vocabularies = collectResourceVocabularies(schemaComponents);

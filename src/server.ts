@@ -63,6 +63,8 @@ export function createServer(options: CreateServerOptions): CreatedServer {
     schemas,
     defaultOrganization: config.organization,
     allowDestructive: config.allowDestructive,
+    pollTimeoutMs: config.pollTimeoutMs,
+    pollIntervalMs: config.pollIntervalMs,
   });
 
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
