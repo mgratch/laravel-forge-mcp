@@ -302,6 +302,68 @@ describe('generated operation table', () => {
     }
   });
 
+  it('keeps every operation that runs caller-authored code behind the destructive switch', () => {
+    // Execution subsumes deletion: an unconstrained command, a Supervisor
+    // config, a scheduled job's command or a custom recipe can each reproduce
+    // the consequence of every tool the switch hides. Pinned by operationId so
+    // a future table edit cannot quietly re-expose one.
+    const execution = [
+      'organizations.servers.sites.commands.store',
+      'organizations.recipes.runs.store',
+      'organizations.servers.background-processes.store',
+      'organizations.servers.background-processes.update',
+      'organizations.servers.scheduled-jobs.store',
+      'organizations.servers.sites.scheduled-jobs.store',
+    ];
+
+    for (const operationId of execution) {
+      const operation = OPERATIONS.find((candidate) => candidate.operationId === operationId);
+      expect(operation, operationId).toBeDefined();
+      expect(operation?.destructive, `${operationId} is not destructive`).toBe(true);
+    }
+  });
+
+  it('confirmation-gates every mutation that can interrupt a live service', () => {
+    const liveService = [
+      // Stages or triggers execution.
+      'forge-recipes.runs.store',
+      'organization.recipes.store',
+      'organizations.recipes.update',
+      'organizations.servers.sites.deployments.script.update',
+      'organizations.servers.sites.deployments.store',
+      // Invalidates a credential.
+      'organizations.servers.key.update',
+      'organizations.servers.sites.deployments.deploy-hook.update',
+      // Rewrites live configuration, routing or access control.
+      'organizations.servers.sites.environment.update',
+      'organizations.servers.sites.load-balancing-nodes.update',
+      'organizations.servers.sites.update',
+      'organizations.servers.sites.redirect-rules.store',
+      'organizations.servers.sites.security-rules.store',
+      'organizations.servers.sites.security-rules.update',
+      'organizations.servers.firewall-rules.store',
+      'organizations.servers.php.site-version.update',
+      'organizations.servers.network.update',
+    ];
+
+    for (const operationId of liveService) {
+      const operation = OPERATIONS.find((candidate) => candidate.operationId === operationId);
+      expect(operation, operationId).toBeDefined();
+      expect(operation?.requiresConfirm, `${operationId} is unguarded`).toBe(true);
+    }
+  });
+
+  it('binds the whole body of every guarded operation that takes one', () => {
+    for (const operation of OPERATIONS) {
+      if (!operation.requiresConfirm) continue;
+
+      const documented = spec.paths[operation.path]?.[operation.method.toLowerCase()];
+      const hasBody = documented?.requestBody?.content?.['application/json']?.schema !== undefined;
+
+      expect(operation.confirmBindsBody, `${operation.name} body binding`).toBe(hasBody);
+    }
+  });
+
   it('requires confirmation for every destructive operation', () => {
     for (const operation of OPERATIONS.filter((candidate) => candidate.destructive)) {
       expect(operation.requiresConfirm, `${operation.name} is unguarded`).toBe(true);

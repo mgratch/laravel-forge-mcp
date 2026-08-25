@@ -13,11 +13,7 @@ import type { ForgeClient, ForgeResponse } from '../client/http.js';
 import { ForgeApiError, ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
 import { pollUntilTerminal, readStatus, statusSettles } from '../client/polling.js';
-import {
-  CONFIRMATION_DIGEST_FIELDS,
-  DEFAULT_PENDING_STATUSES,
-  PENDING_STATUSES,
-} from '../generated/operations.js';
+import { DEFAULT_PENDING_STATUSES, PENDING_STATUSES } from '../generated/operations.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor, PollingPlan } from './types.js';
 import { ArgumentValidator } from './validate.js';
@@ -112,6 +108,7 @@ export function buildConfirmationPhrase(
   descriptor: OperationDescriptor,
   args: Record<string, unknown>,
   organizationPinned = false,
+  body?: unknown,
 ): string {
   const identifiers = descriptor.pathParams
     .filter((param) => !(param.name === ORGANIZATION_PARAM && organizationPinned))
@@ -129,37 +126,58 @@ export function buildConfirmationPhrase(
       const value = args[field];
       if (value === undefined || value === null) return undefined;
 
-      // Where the payload is the hazard, bind it by digest: the phrase stays
-      // usable and secret-free, but changing one character of the command,
-      // script or `.env` invalidates the approval.
-      if (DIGEST_FIELDS.has(field)) return `${field}=${digestOf(value)}`;
-
       return `${field}=${stringifyParam(field, value)}`;
     })
     .filter((part): part is string => part !== undefined);
 
   const parts = [descriptor.name, ...identifiers, ...effects];
+
+  // The body of a guarded operation is bound in full. Approving "run a command"
+  // means nothing if the command can change between the approval and the
+  // request, and echoing the payload is not an option — a deployment script
+  // would be unreadable and a `.env` is secret by definition. The digest binds
+  // every field the body carries, including ones a future spec adds.
+  if (descriptor.confirmBindsBody && body !== undefined) parts.push(`body=${digestOf(body)}`);
+
   return parts.join(' ');
 }
-
-const DIGEST_FIELDS = new Set(CONFIRMATION_DIGEST_FIELDS);
 
 /**
  * Renders a value as a short, stable SHA-256 prefix.
  *
  * Sixteen hex characters is 64 bits — far beyond any accidental collision
- * between two payloads a caller might confuse, while staying short enough that
- * a human can compare the phrase at a glance. Objects and arrays are hashed
- * over their canonical JSON so key order cannot change the digest.
+ * between two payloads a caller might confuse, while staying short enough for a
+ * human to compare at a glance.
  */
 function digestOf(value: unknown): string {
-  const canonical =
-    typeof value === 'string' ? value : JSON.stringify(value, Object.keys(value ?? {}).sort());
+  const canonical = typeof value === 'string' ? value : canonicalJson(value);
 
-  return `sha256:${createHash('sha256')
-    .update(canonical ?? '', 'utf8')
-    .digest('hex')
-    .slice(0, 16)}`;
+  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * Serialises a value to JSON with every object's own keys sorted, at every
+ * depth.
+ *
+ * `JSON.stringify(value, keys)` is *not* this: an array replacer is a property
+ * allowlist applied at every nesting level, so nested keys absent from the
+ * top-level list are dropped — two load-balancer bodies differing only in a
+ * nested `server_id` would hash identically. Array order is preserved, because
+ * for a list of backend servers the order is part of the value.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+
+    return `{${entries.join(',')}}`;
+  }
+
+  return JSON.stringify(value) ?? 'null';
 }
 
 /** Substitutes `{param}` placeholders, URL-encoding each value. */
@@ -220,10 +238,10 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
               `Confirmation phrase. Must exactly equal "${descriptor.name} <field>=<value> ..." ` +
               `— the tool name, then this operation's target identifiers in the order they are ` +
               `declared. Example: "${buildExampleConfirmation(descriptor, defaultOrganization !== undefined)}". ` +
-              (descriptor.confirmationTargetFields.some((field) => DIGEST_FIELDS.has(field))
-                ? 'Fields shown as sha256:<digest> are bound by the first 16 hex characters of ' +
-                  'the SHA-256 of the value you are sending, so the payload you approve is the ' +
-                  'payload that runs. '
+              (descriptor.confirmBindsBody
+                ? 'The body=sha256:<digest> term is the first 16 hex characters of the SHA-256 ' +
+                  'of the canonical JSON request body you are sending, so the payload approved ' +
+                  'is the payload that runs. '
                 : '') +
               'The tool refuses to run and issues no request without an exact match.',
           }
@@ -303,10 +321,12 @@ function buildExampleConfirmation(
   }
 
   for (const field of descriptor.confirmationTargetFields) {
-    // Mirror the digest form, so an agent that copies the example does not
-    // learn to send the raw payload and fail its first attempt.
-    parts.push(DIGEST_FIELDS.has(field) ? `${field}=sha256:<digest>` : `${field}=<${field}>`);
+    parts.push(`${field}=<${field}>`);
   }
+
+  // Mirror the digest term, so an agent that copies the example does not learn
+  // a shape that will fail its first attempt.
+  if (descriptor.confirmBindsBody) parts.push('body=sha256:<digest>');
 
   return parts.join(' ');
 }
@@ -386,20 +406,6 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     resolvedArgs[ORGANIZATION_PARAM] = defaultOrganization;
   }
 
-  if (descriptor.requiresConfirm) {
-    const expected = buildConfirmationPhrase(
-      descriptor,
-      resolvedArgs,
-      defaultOrganization !== undefined,
-    );
-    const received = resolvedArgs['confirm'];
-    const receivedString = typeof received === 'string' ? received : undefined;
-
-    if (receivedString?.trim() !== expected) {
-      throw new ForgeConfirmationError(descriptor.name, expected, receivedString);
-    }
-  }
-
   const { path, consumed } = renderPath(descriptor.path, resolvedArgs);
 
   const query: Record<string, string | number | boolean | undefined> = {};
@@ -414,6 +420,24 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
   }
 
   const body = extractBody(descriptor, resolvedArgs, consumed);
+
+  // The guard runs after the request is assembled but before it is sent, so the
+  // phrase binds the exact body that would go on the wire rather than a
+  // reconstruction of it. Nothing has left the process at this point.
+  if (descriptor.requiresConfirm) {
+    const expected = buildConfirmationPhrase(
+      descriptor,
+      resolvedArgs,
+      defaultOrganization !== undefined,
+      body,
+    );
+    const received = resolvedArgs['confirm'];
+    const receivedString = typeof received === 'string' ? received : undefined;
+
+    if (receivedString?.trim() !== expected) {
+      throw new ForgeConfirmationError(descriptor.name, expected, receivedString);
+    }
+  }
 
   const response = await client.request({
     method: descriptor.method,

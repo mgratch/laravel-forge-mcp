@@ -136,6 +136,16 @@ export interface OperationDescriptor {
    */
   readonly confirmationTargetFields: readonly string[];
   /**
+   * Whether the confirmation phrase binds the whole request body by digest.
+   *
+   * True for every guarded operation that accepts a body. Enumerating "the
+   * fields that matter" is a losing game: one omission lets the approved effect
+   * change, and a recipe approved to run as `forge` could be sent as `root`
+   * because only its script was bound. Digesting the canonical body binds every
+   * field, present and future, without putting secrets into the phrase.
+   */
+  readonly confirmBindsBody: boolean;
+  /**
    * Whether repeating this request has the same effect as sending it once.
    *
    * Derived from the HTTP method per RFC 9110, then corrected per operation:

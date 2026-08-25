@@ -74,9 +74,11 @@ and issues no request.
    cannot call — or even see — a tool that is switched off.
 
    Execution counts as destructive here, because it subsumes deletion. `POST .../sites/commands`
-   takes an unconstrained shell string, and a custom recipe is an arbitrary script run on
-   caller-selected servers; either can reproduce the consequence of every tool the switch hides.
-   Classifying them by their HTTP verb would have left `rm -rf` one unguarded `POST` away.
+   takes an unconstrained shell string; a custom recipe is an arbitrary script run on
+   caller-selected servers; a background process and a scheduled job each take a command plus the
+   user to run it as, `root` included; and a background-process update takes raw Supervisor
+   config, which replaces the command. Any of them can reproduce the consequence of every tool the
+   switch hides, so classifying by HTTP verb would have left `rm -rf` one unguarded `POST` away.
 
 2. **Targeted confirmation.** When enabled, each still requires a `confirm` argument that names the
    operation _and its target_:
@@ -96,22 +98,25 @@ and issues no request.
    would archive any server. Generation refuses to run if a guarded operation
    has no target bound into its phrase.
 
-   Where the payload _is_ the hazard, the phrase binds the payload by digest:
+   Where the body determines the effect, the phrase binds the **whole body** by digest:
 
    ```jsonc
+   // requires FORGE_MCP_ALLOW_DESTRUCTIVE=1 — running a command is destructive
    {
      "server": 12345, "site": 67890,
      "command": "php artisan migrate --force",
-     "confirm": "create_servers_sites_commands server=12345 site=67890 command=sha256:9c1185a5c5e9fc54"
+     "confirm": "create_servers_sites_commands server=12345 site=67890 body=sha256:cc281c7bca6feeaf"
    }
    ```
 
    Approving "run a command" would mean nothing if the command could change between the approval
-   and the request, and echoing it verbatim is not an option for a deployment script or a whole
-   `.env` — one is unreadable, the other is secret. A 16-hex-character SHA-256 prefix binds the
-   bytes without disclosing them: change one character of the command, script, `.env` or deployment
-   script and the confirmation no longer matches. Recipe runs bind the **server list** instead,
-   since for them the hazard is where the script lands.
+   and the request, and echoing the payload is not an option — a deployment script is unreadable
+   and a `.env` is secret by definition. The digest is the first 16 hex characters of the SHA-256
+   of the canonical JSON body, so every field is bound, including ones a future spec adds.
+
+   Binding a hand-picked list of fields would leave gaps: a recipe approved to run as `forge` could
+   be sent as `root` if only its script were bound. If the phrase does not match the body about to
+   be sent, no request is made.
 
    A generic `"yes"` is refused, and so is a phrase naming a different server — so a model cannot
    satisfy the guard by pattern-matching, and cannot confirm one resource while acting on another.
@@ -214,8 +219,13 @@ minutes. `FORGE_POLL_TIMEOUT_MS` and `FORGE_POLL_INTERVAL_MS` override both.
 Run a command and collect its output:
 
 ```jsonc
-// tool: create_servers_sites_commands
-{ "server": 12345, "site": 67890, "command": "php artisan migrate --force" }
+// tool: create_servers_sites_commands — destructive, so it needs
+// FORGE_MCP_ALLOW_DESTRUCTIVE=1 plus a body-bound confirmation
+{
+  "server": 12345, "site": 67890,
+  "command": "php artisan migrate --force",
+  "confirm": "create_servers_sites_commands server=12345 site=67890 body=sha256:cc281c7bca6feeaf"
+}
 // then: get_servers_sites_commands_output with the returned command id
 ```
 
