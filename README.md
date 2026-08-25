@@ -76,9 +76,10 @@ and issues no request.
    Execution counts as destructive here, because it subsumes deletion. `POST .../sites/commands`
    takes an unconstrained shell string; a custom recipe is an arbitrary script run on
    caller-selected servers; a background process and a scheduled job each take a command plus the
-   user to run it as, `root` included; and a background-process update takes raw Supervisor
-   config, which replaces the command. Any of them can reproduce the consequence of every tool the
-   switch hides, so classifying by HTTP verb would have left `rm -rf` one unguarded `POST` away.
+   user to run it as, `root` included; a background-process update takes raw Supervisor config,
+   which replaces the command; and installing an SSH key hands its holder persistent shell access.
+   Any of them can reproduce the consequence of every tool the switch hides, so classifying by
+   HTTP verb would have left `rm -rf` one unguarded `POST` away.
 
 2. **Targeted confirmation.** When enabled, each still requires a `confirm` argument that names the
    operation _and its target_:

@@ -304,9 +304,9 @@ describe('generated operation table', () => {
 
   it('keeps every operation that runs caller-authored code behind the destructive switch', () => {
     // Execution subsumes deletion: an unconstrained command, a Supervisor
-    // config, a scheduled job's command or a custom recipe can each reproduce
-    // the consequence of every tool the switch hides. Pinned by operationId so
-    // a future table edit cannot quietly re-expose one.
+    // config, a scheduled job's command, a custom recipe or an installed SSH
+    // key can each reproduce the consequence of every tool the switch hides.
+    // Pinned by operationId so a future table edit cannot quietly re-expose one.
     const execution = [
       'organizations.servers.sites.commands.store',
       'organizations.recipes.runs.store',
@@ -314,6 +314,9 @@ describe('generated operation table', () => {
       'organizations.servers.background-processes.update',
       'organizations.servers.scheduled-jobs.store',
       'organizations.servers.sites.scheduled-jobs.store',
+      // Additive, and still an execution capability: installing a
+      // caller-supplied public key hands its holder persistent shell access.
+      'organizations.servers.ssh-keys.store',
     ];
 
     for (const operationId of execution) {

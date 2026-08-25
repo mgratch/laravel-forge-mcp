@@ -7,7 +7,7 @@
  * Source of truth: https://forge.laravel.com/api/docs.openapi
  * Human documentation: https://forge.laravel.com/docs/api-reference/introduction
  *
- * 273 operations · 34 destructive · 83 confirmation-gated
+ * 273 operations · 35 destructive · 84 confirmation-gated
  * 40 of the 105 asynchronous operations can be polled to completion.
  */
 
@@ -2796,11 +2796,11 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
     bodySchemaInline: undefined,
     bodyRequired: true,
     confirmationTargetFields: [],
-    confirmBindsBody: false,
+    confirmBindsBody: true,
     idempotent: false,
     polling: { path: "/orgs/{organization}/servers/{server}/ssh-keys/{key}", idParam: "key", completion: "status", resourceType: "keys", timeoutMs: 120000, initialIntervalMs: 2000, maxIntervalMs: 10000 },
-    destructive: false,
-    requiresConfirm: false,
+    destructive: true,
+    requiresConfirm: true,
   },
   {
     name: "get_servers_ssh_keys",

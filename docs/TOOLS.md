@@ -6,8 +6,8 @@ Every tool below maps to exactly one operation in the [Laravel Forge API](https:
 
 - **273** tools total
 - **105** are asynchronous; **40** of those expose a status that can be polled and accept `wait: true`
-- **34** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
-- **83** require a matching `confirm` argument
+- **35** are destructive and registered only when `FORGE_MCP_ALLOW_DESTRUCTIVE=1`
+- **84** require a matching `confirm` argument
 
 ## Argument conventions
 
@@ -46,6 +46,7 @@ These are hidden unless `FORGE_MCP_ALLOW_DESTRUCTIVE=1`, and always require `con
 | `create_roles` | `POST /orgs/{organization}/roles` |
 | `update_roles` | `PUT /orgs/{organization}/roles/{role}` |
 | `delete_roles` | `DELETE /orgs/{organization}/roles/{role}` |
+| `create_servers_ssh_keys` | `POST /orgs/{organization}/servers/{server}/ssh-keys` |
 | `delete_servers_ssh_keys` | `DELETE /orgs/{organization}/servers/{server}/ssh-keys/{key}` |
 | `create_servers_scheduled_jobs` | `POST /orgs/{organization}/servers/{server}/scheduled-jobs` |
 | `create_servers_sites_scheduled_jobs` | `POST /orgs/{organization}/servers/{server}/sites/{site}/scheduled-jobs` |
@@ -362,7 +363,7 @@ Forge documentation: https://forge.laravel.com/docs/ssh
 | Tool | Endpoint | Summary | Flags |
 | --- | --- | --- | --- |
 | `list_servers_ssh_keys` | `GET /orgs/{organization}/servers/{server}/ssh-keys` | List server SSH keys | — |
-| `create_servers_ssh_keys` | `POST /orgs/{organization}/servers/{server}/ssh-keys` | Create server SSH key | async, pollable (status) |
+| `create_servers_ssh_keys` | `POST /orgs/{organization}/servers/{server}/ssh-keys` | Create server SSH key | **destructive**, async, pollable (status) |
 | `get_servers_ssh_keys` | `GET /orgs/{organization}/servers/{server}/ssh-keys/{key}` | Get server SSH key | — |
 | `delete_servers_ssh_keys` | `DELETE /orgs/{organization}/servers/{server}/ssh-keys/{key}` | Delete server SSH key | **destructive**, async, pollable (absence) |
 | `get_servers_key` | `GET /orgs/{organization}/servers/{server}/key` | Get server public SSH key | — |

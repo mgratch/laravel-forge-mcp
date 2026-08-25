@@ -89,12 +89,20 @@ const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
   'organizations.servers.php.versions.destroy',
   // Deploy key removal breaks future deployments for the site.
   'organizations.servers.sites.deploy-key.destroy',
+  // Execution, which subsumes deletion. Each of these accepts caller-authored
+  // code, or a credential that runs it, so leaving any of them outside the
+  // switch would let an agent reproduce the consequence of every tool the
+  // switch hides.
   'organizations.servers.sites.commands.store',
   'organizations.recipes.runs.store',
   'organizations.servers.background-processes.store',
   'organizations.servers.background-processes.update',
   'organizations.servers.scheduled-jobs.store',
   'organizations.servers.sites.scheduled-jobs.store',
+  // Additive, and still destructive by consequence: it installs a
+  // caller-supplied public key for a caller-chosen user, so whoever holds the
+  // private half has persistent shell access from then on.
+  'organizations.servers.ssh-keys.store',
 ]);
 
 /**
@@ -241,7 +249,6 @@ const REVIEWED_SAFE_MUTATION_OPERATION_IDS = new Set<string>([
   'organizations.servers.sites.storeOnBalancer',
   'organizations.servers.sites.webhooks.destroy',
   'organizations.servers.sites.webhooks.store',
-  'organizations.servers.ssh-keys.store',
   'organizations.servers.store',
   'organizations.servers.update',
   'organizations.storage-providers.store',

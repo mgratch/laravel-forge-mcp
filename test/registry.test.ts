@@ -852,6 +852,43 @@ describe('arbitrary execution', () => {
 
     expect(guarded).not.toContain('organizations.servers.sites.commands.store');
     expect(guarded).not.toContain('organizations.recipes.runs.store');
+    expect(guarded).not.toContain('organizations.servers.ssh-keys.store');
+  });
+
+  it('treats installing an SSH key as an execution capability', async () => {
+    // It adds no privilege by itself, but whoever holds the private half has
+    // shell access from then on — the same boundary as running a command.
+    const key = OPERATIONS.find((op) => op.operationId === 'organizations.servers.ssh-keys.store');
+    expect(key?.destructive).toBe(true);
+    expect(key?.requiresConfirm).toBe(true);
+
+    const stub = stubFetch([{ status: 202 }]);
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      allowDestructive: true,
+      only: ['create_servers_ssh_keys'],
+    });
+    const tool = findTool(tools, 'create_servers_ssh_keys');
+
+    const approved = { server: 1, name: 'laptop', key: 'ssh-ed25519 AAAAC3Nz', user: 'forge' };
+    const phrase = buildConfirmationPhrase(tool.descriptor, approved, true, {
+      name: approved.name,
+      key: approved.key,
+      user: approved.user,
+    });
+
+    // Swapping either the key or the user it installs for invalidates the
+    // approval, and issues nothing.
+    await expect(
+      tool.handler({ ...approved, key: 'ssh-ed25519 ZZZZattacker', confirm: phrase }),
+    ).rejects.toThrow(ForgeConfirmationError);
+    await expect(tool.handler({ ...approved, user: 'root', confirm: phrase })).rejects.toThrow(
+      ForgeConfirmationError,
+    );
+    expect(stub.requests).toHaveLength(0);
+
+    await tool.handler({ ...approved, confirm: phrase });
+    expect(stub.requests).toHaveLength(1);
   });
 
   it('still requires confirmation once they are enabled', () => {
