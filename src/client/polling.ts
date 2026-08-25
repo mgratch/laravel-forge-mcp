@@ -50,6 +50,13 @@ export interface PollOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   /** Injectable clock, for deterministic tests. */
   readonly now?: () => number;
+  /**
+   * Reads the status from whatever the poll returns.
+   *
+   * Callers that poll a whole response envelope rather than a bare resource
+   * supply this so the status is read from the right level.
+   */
+  readonly readStatus?: (value: unknown) => string | undefined;
 }
 
 /** Outcome of a poll. */
@@ -110,6 +117,7 @@ export async function pollUntilTerminal<T>(
   const maxIntervalMs = options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
+  const statusOf = options.readStatus ?? readStatus;
 
   const startedAt = now();
   let interval = initialIntervalMs;
@@ -119,7 +127,7 @@ export async function pollUntilTerminal<T>(
   for (;;) {
     attempts += 1;
     const value = await read();
-    lastStatus = readStatus(value);
+    lastStatus = statusOf(value);
 
     if (isTerminalStatus(lastStatus)) {
       return { value, status: lastStatus, attempts, elapsedMs: now() - startedAt };
@@ -143,48 +151,3 @@ export async function pollUntilTerminal<T>(
 
 /** Exposed so callers can surface the last value after a timeout, if they hold one. */
 export type { ForgePollTimeoutError };
-
-/** Outcome of waiting for a resource to disappear. */
-export interface AbsenceResult {
-  readonly absent: boolean;
-  readonly attempts: number;
-}
-
-/**
- * Polls until a read fails with 404, which is how a deletion reports success.
- *
- * Treating that 404 as an error — as a status-based poll would — turns a
- * successful delete into a spurious failure.
- */
-export async function pollUntilAbsent(
-  read: () => Promise<void>,
-  options: PollOptions = {},
-): Promise<AbsenceResult> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const sleep = options.sleep ?? defaultSleep;
-  const now = options.now ?? Date.now;
-
-  const startedAt = now();
-  let interval = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
-  let attempts = 0;
-
-  for (;;) {
-    attempts += 1;
-
-    try {
-      await read();
-    } catch (error) {
-      // 404 means the resource is gone: the deletion completed.
-      if (typeof error === 'object' && error !== null && 'status' in error) {
-        if (error.status === 404) return { absent: true, attempts };
-      }
-      throw error;
-    }
-
-    const elapsed = now() - startedAt;
-    if (elapsed + interval >= timeoutMs) return { absent: false, attempts };
-
-    await sleep(interval);
-    interval = Math.min(interval * 2, options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS);
-  }
-}

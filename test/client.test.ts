@@ -7,7 +7,6 @@ import {
 } from '../src/client/errors.js';
 import { ForgeClient } from '../src/client/http.js';
 import { extractNextCursor, extractSelfLink, normalizeResponse } from '../src/client/jsonapi.js';
-import { pollUntilAbsent } from '../src/client/polling.js';
 import {
   RateLimiter,
   parseRateLimitHeaders,
@@ -509,35 +508,6 @@ describe('ForgeRateLimitError', () => {
 
     expect(rateLimited.isRetryable).toBe(true);
     expect(notFound.isRetryable).toBe(false);
-  });
-});
-
-describe('pollUntilAbsent', () => {
-  it('treats a 404 as successful deletion', async () => {
-    let calls = 0;
-    const result = await pollUntilAbsent(
-      async () => {
-        calls += 1;
-        await Promise.resolve();
-        if (calls >= 2) throw new ForgeApiError('gone', 404, 'GET', 'u', null);
-      },
-      { sleep: instantSleep },
-    );
-
-    expect(result.absent).toBe(true);
-    expect(result.attempts).toBe(2);
-  });
-
-  it('propagates errors that are not a 404', async () => {
-    await expect(
-      pollUntilAbsent(
-        async () => {
-          await Promise.resolve();
-          throw new ForgeApiError('boom', 500, 'GET', 'u', null);
-        },
-        { sleep: instantSleep },
-      ),
-    ).rejects.toThrow(ForgeApiError);
   });
 });
 

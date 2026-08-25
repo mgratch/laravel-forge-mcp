@@ -653,3 +653,71 @@ describe('polling a create', () => {
     expect(stub.requests).toHaveLength(1);
   });
 });
+
+describe('polled response integrity', () => {
+  it('returns metadata from the terminal read, not the original 202', async () => {
+    // Combining data from the final GET with links from the accepted response
+    // would present two different API responses as one object.
+    const stub = stubFetch([
+      {
+        status: 202,
+        body: {
+          data: {
+            id: '7',
+            type: 'backgroundProcesses',
+            attributes: { status: 'installing' },
+            links: { self: '/api/orgs/acme/servers/1/background-processes/7' },
+          },
+          links: { self: '/api/stale-from-the-202' },
+        },
+      },
+      {
+        body: {
+          data: { id: '7', type: 'backgroundProcesses', attributes: { status: 'active' } },
+          included: [{ id: '1', type: 'servers', attributes: { name: 'web-1' } }],
+          links: { self: '/api/orgs/acme/servers/1/background-processes/7' },
+        },
+      },
+    ]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_background_processes'],
+    });
+    const tool = tools.find((c) => c.name === 'create_servers_background_processes');
+    if (!tool) return;
+
+    const result = (await tool.handler({
+      server: 1,
+      name: 'worker',
+      command: 'php artisan queue:work',
+      user: 'forge',
+      processes: 1,
+      wait: true,
+    })) as Record<string, unknown>;
+
+    expect(result['included']).toEqual([{ id: '1', type: 'servers', name: 'web-1' }]);
+    expect(JSON.stringify(result['links'])).not.toContain('stale-from-the-202');
+  }, 20_000);
+
+  it('tells a non-pollable async caller what to read instead of offering wait', async () => {
+    const stub = stubFetch([{ status: 202 }]);
+
+    const tools = makeRegistry(stub, {
+      organization: 'acme',
+      only: ['create_servers_sites_commands'],
+    });
+    const tool = tools.find((c) => c.name === 'create_servers_sites_commands');
+    if (!tool || tool.descriptor.pollable) return;
+
+    const result = (await tool.handler({
+      server: 1,
+      site: 2,
+      command: 'php artisan migrate --force',
+    })) as Record<string, unknown>;
+
+    const note = String(result['note']);
+    expect(note).toContain('no route to poll');
+    expect(note).not.toContain('wait: true');
+  });
+});

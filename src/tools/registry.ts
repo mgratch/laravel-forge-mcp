@@ -7,10 +7,10 @@
  * drift from the API.
  */
 
-import type { ForgeClient } from '../client/http.js';
+import type { ForgeClient, ForgeResponse } from '../client/http.js';
 import { ForgeApiError, ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
-import { pollUntilTerminal } from '../client/polling.js';
+import { pollUntilTerminal, readStatus } from '../client/polling.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor } from './types.js';
 import { ArgumentValidator } from './validate.js';
@@ -354,9 +354,12 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
       ...(response.links === undefined ? {} : { links: response.links }),
       ...(response.accepted
         ? {
-            note:
-              'Forge accepted the request and is completing it in the background. ' +
-              'Re-read the resource to observe the result, or pass wait: true.',
+            note: supportsPolling(descriptor)
+              ? 'Forge accepted the request and is completing it in the background. ' +
+                'Re-read the resource to observe the result, or pass wait: true.'
+              : 'Forge accepted the request and is completing it in the background. This ' +
+                'operation exposes no route to poll, so use the matching read or list tool to ' +
+                'observe the result.',
           }
         : {}),
     };
@@ -390,24 +393,41 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
   // failure — and 19 of the pollable operations are deletions.
   const treat404AsDone = descriptor.method === 'DELETE';
 
-  const polled = await pollUntilTerminal(async () => {
-    try {
-      const read = await client.request({ method: 'GET', path: pollPath, query: {} });
-      return read.data;
-    } catch (error) {
-      if (treat404AsDone && error instanceof ForgeApiError && error.status === 404) {
-        return { status: 'deleted' };
+  // Poll the whole response rather than just its data, so what comes back is
+  // the terminal read's own `included` and `links`. Returning data from the
+  // final GET alongside metadata from the original 202 would combine two
+  // different responses into one object.
+  const polled = await pollUntilTerminal(
+    async () => {
+      try {
+        return await client.request({ method: 'GET', path: pollPath, query: {} });
+      } catch (error) {
+        if (treat404AsDone && error instanceof ForgeApiError && error.status === 404) {
+          return {
+            status: 404,
+            accepted: false,
+            data: { status: 'deleted' },
+            meta: undefined,
+            links: undefined,
+            included: undefined,
+          };
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    },
+    // The status lives on the resource, not on the response envelope.
+    { readStatus: (value) => readStatus((value as ForgeResponse).data) },
+  );
+
+  const terminal = polled.value;
 
   return {
     status: response.status,
     accepted: response.accepted,
-    data: polled.value,
-    ...(response.included === undefined ? {} : { included: response.included }),
-    ...(response.links === undefined ? {} : { links: response.links }),
+    data: terminal.data,
+    ...(terminal.meta === undefined ? {} : { meta: terminal.meta }),
+    ...(terminal.included === undefined ? {} : { included: terminal.included }),
+    ...(terminal.links === undefined ? {} : { links: terminal.links }),
     polled: {
       status: polled.status,
       attempts: polled.attempts,
