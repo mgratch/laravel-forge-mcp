@@ -71,6 +71,14 @@ export interface RegistryOptions {
   readonly defaultOrganization: string | undefined;
   /** When false, destructive operations are not registered at all. */
   readonly allowDestructive: boolean;
+  /**
+   * Scopes the configured token holds, when declared.
+   *
+   * Tools needing a scope that is absent are not registered: an agent cannot
+   * plan around a tool it never sees, whereas a 403 arrives only after it has
+   * already committed to a course of action.
+   */
+  readonly scopes?: ReadonlySet<string> | undefined;
   /** Injectable validator, for tests. */
   readonly validator?: ArgumentValidator;
   /** Overrides every operation's polling budget. See `ServerConfig`. */
@@ -209,13 +217,17 @@ export function renderPath(
  * so an agent cannot discover a tool it is not permitted to call.
  */
 export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
-  const { client, operations, schemas, defaultOrganization, allowDestructive } = options;
+  const { client, operations, schemas, defaultOrganization, allowDestructive, scopes } = options;
 
   const validator = options.validator ?? new ArgumentValidator();
   const tools: RegisteredTool[] = [];
 
   for (const descriptor of operations) {
     if (descriptor.destructive && !allowDestructive) continue;
+
+    // A tool the token cannot use is worse than an absent one: a model plans
+    // around it and only learns the truth from a 403, mid-task.
+    if (!hasScopesFor(descriptor, scopes)) continue;
 
     // A pinned organization is injected server-side and hidden from the model.
     const omitParams = new Set<string>();
@@ -273,6 +285,48 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
   }
 
   return tools;
+}
+
+/**
+ * Rewrites a bare 403 into something a caller can act on.
+ *
+ * Forge answers 403 both for a token missing a scope and for a user missing an
+ * organization permission, and its body says neither. Naming the scope the
+ * operation declares turns "Forbidden" into a specific next step, while still
+ * flagging the other possibility rather than asserting a cause we cannot see.
+ */
+function explainForbidden(error: unknown, descriptor: OperationDescriptor): unknown {
+  if (!(error instanceof ForgeApiError) || error.status !== 403) return error;
+  if (descriptor.scopes.length === 0) return error;
+
+  const needed = descriptor.scopes.map((scope) => `"${scope}"`).join(' and ');
+
+  return new ForgeApiError(
+    `${error.message}\n\n` +
+      `"${descriptor.name}" requires the ${needed} scope. Forge returns 403 both for a token ` +
+      'minted without a scope and for a user lacking the matching organization permission, so ' +
+      'check the token at https://forge.laravel.com/profile/api first, then your role in the ' +
+      "organization. A token's scopes cannot be widened after creation — mint a new one.",
+    error.status,
+    error.method,
+    error.url,
+    error.body,
+  );
+}
+
+/**
+ * Whether the configured token's scopes cover this operation.
+ *
+ * Undeclared scopes mean "unknown", and everything registers — the server
+ * cannot discover them, because Forge exposes no token introspection. The
+ * thirteen reference endpoints that declare no scope always register.
+ */
+export function hasScopesFor(
+  descriptor: OperationDescriptor,
+  held: ReadonlySet<string> | undefined,
+): boolean {
+  if (held === undefined) return true;
+  return descriptor.scopes.every((scope) => held.has(scope));
 }
 
 /**
@@ -334,6 +388,10 @@ function buildExampleConfirmation(
 /** Composes the description a model reads before choosing a tool. */
 function buildDescription(descriptor: OperationDescriptor): string {
   const parts: string[] = [descriptor.description];
+
+  if (descriptor.scopes.length > 0) {
+    parts.push(`Requires the ${descriptor.scopes.join(' and ')} token scope.`);
+  }
 
   if (descriptor.processingMode === 'async') {
     parts.push(
@@ -439,15 +497,19 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
     }
   }
 
-  const response = await client.request({
-    method: descriptor.method,
-    path,
-    query,
-    ...(body === undefined ? {} : { body }),
-    // Forge uses PUT for two credential regenerations, so retry safety is an
-    // operation-level fact rather than a property of the verb.
-    idempotent: descriptor.idempotent,
-  });
+  const response = await client
+    .request({
+      method: descriptor.method,
+      path,
+      query,
+      ...(body === undefined ? {} : { body }),
+      // Forge uses PUT for two credential regenerations, so retry safety is an
+      // operation-level fact rather than a property of the verb.
+      idempotent: descriptor.idempotent,
+    })
+    .catch((error: unknown) => {
+      throw explainForbidden(error, descriptor);
+    });
 
   // Polling only makes sense when Forge deferred the work. A 200 or 204 means
   // it is already done, so there is nothing to wait for — and a poll started

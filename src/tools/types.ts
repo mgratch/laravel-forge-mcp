@@ -136,6 +136,19 @@ export interface OperationDescriptor {
    */
   readonly confirmationTargetFields: readonly string[];
   /**
+   * OAuth scopes this operation requires, as the document declares them.
+   *
+   * Empty for the thirteen read-only reference endpoints (providers, regions,
+   * sizes, predefined roles, permissions) that any token may read.
+   *
+   * This is the only privilege boundary Forge enforces *server-side*: a token
+   * is minted with a chosen scope set, so one without `server:delete` cannot
+   * delete a server whatever the client does. `FORGE_MCP_ALLOW_DESTRUCTIVE`
+   * and the confirmation phrases sit on top of that as ergonomics, not as the
+   * wall.
+   */
+  readonly scopes: readonly string[];
+  /**
    * Whether the confirmation phrase binds the whole request body by digest.
    *
    * True for every guarded operation that accepts a body. Enumerating "the

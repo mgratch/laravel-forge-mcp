@@ -55,6 +55,7 @@ Generate a token at [forge.laravel.com/profile/api](https://forge.laravel.com/pr
 | `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                                    |
 | `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                                                  |
 | `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                                             |
+| `FORGE_SCOPES`                | no       | unset                           | Scopes your token holds. Registers only the tools they cover. Run `--scopes` for the list. Unset registers everything.                |
 | `FORGE_POLL_TIMEOUT_MS`       | no       | per operation                   | Overrides the polling budget. Defaults to 30 min for server provisioning, 2 min elsewhere.                                            |
 | `FORGE_POLL_INTERVAL_MS`      | no       | per operation                   | Overrides the initial polling interval.                                                                                               |
 
@@ -66,6 +67,31 @@ rather than a disclaimer.
 Arguments are validated against each tool's advertised JSON Schema **before** the confirmation
 guard and before any network call, so an unknown or malformed argument fails with a clear message
 and issues no request.
+
+### Token scopes are the boundary that actually binds
+
+A Forge API token is minted at [forge.laravel.com/profile/api](https://forge.laravel.com/profile/api)
+with a chosen subset of the API's 62 scopes, and **that subset is the only privilege boundary Forge
+enforces server-side.** A token without `server:delete` cannot delete a server whatever any client
+does. The two gates below are ergonomics on top of it, not the wall — so choose scopes first.
+
+```bash
+node dist/index.js --scopes    # every scope, what it unlocks, and ready-made profiles
+```
+
+Declare the same set in `FORGE_SCOPES` and only the tools those scopes cover are registered. A
+missing scope then shows up as an absent tool, before a model has planned around it, instead of a
+403 halfway through a task. Forge has no token-introspection endpoint, so this has to be stated
+rather than discovered.
+
+> [!WARNING]
+> **Three `:view` scopes permit writes, and two of them permit arbitrary code execution.**
+> `server:view` gates all ten scheduled-job endpoints — _including create and delete_ — and a
+> scheduled job carries an arbitrary command plus the user to run it as. `recipe:view` permits
+> running a custom recipe. `credential:view` permits creating and deleting server credentials.
+> Forge declares purpose-built `server:create-schedulers` / `server:delete-schedulers` scopes but
+> does not apply them to those endpoints. `--scopes` lists every case. Only three of the 62 scopes
+> are genuinely read-only, which is why the `read-only` profile covers just 25 of 273 tools.
 
 **Two independent gates protect destructive operations:**
 

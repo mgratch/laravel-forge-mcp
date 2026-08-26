@@ -358,6 +358,7 @@ interface OpenApiOperation {
     content?: Record<string, { schema?: Record<string, unknown> }>;
   };
   responses?: Record<string, unknown>;
+  security?: Array<Record<string, string[]>>;
   'x-processingMode'?: 'sync' | 'async';
 }
 
@@ -365,7 +366,7 @@ interface OpenApiDocument {
   info: { title: string; version: string };
   servers?: Array<{ url: string }>;
   paths: Record<string, Record<string, OpenApiOperation | undefined>>;
-  components?: { schemas?: Record<string, unknown> };
+  components?: { schemas?: Record<string, unknown>; securitySchemes?: unknown };
 }
 
 /**
@@ -945,6 +946,42 @@ function formatPollingPlan(plan: PollingPlan | undefined): string {
   return `{ ${parts.join(', ')} }`;
 }
 
+/**
+ * The OAuth scope(s) an operation requires, as the document declares them.
+ *
+ * 260 of the 273 operations name a scope; the 13 that do not are read-only
+ * reference endpoints (server providers, regions, sizes, predefined roles,
+ * permissions) that any authenticated token can read.
+ *
+ * This is the only privilege boundary Forge enforces *server-side*: an API
+ * token is minted with a chosen scope set, so a token without
+ * `server:delete` cannot delete a server no matter what a client does. The
+ * `FORGE_MCP_ALLOW_DESTRUCTIVE` switch and the confirmation phrases sit on top
+ * of that as client-side ergonomics, not as the wall.
+ *
+ * @see https://forge.laravel.com/docs/api — token scopes are chosen at creation
+ */
+function collectScopes(operation: OpenApiOperation, declared: ReadonlySet<string>): string[] {
+  const scopes = new Set<string>();
+
+  for (const requirement of operation.security ?? []) {
+    for (const list of Object.values(requirement)) {
+      for (const scope of list) {
+        if (!declared.has(scope)) {
+          throw new Error(
+            `Operation "${operation.operationId}" requires scope "${scope}", which the ` +
+              'document does not declare in components.securitySchemes.oauth2. The Forge spec ' +
+              'changed — a scope the server does not know about would be filtered wrongly.',
+          );
+        }
+        scopes.add(scope);
+      }
+    }
+  }
+
+  return [...scopes].sort();
+}
+
 /** Strips the Mintlify "Processing mode: <small><code>sync</code></small>" footer. */
 function cleanDescription(raw: string | undefined): string {
   if (!raw) return '';
@@ -1000,6 +1037,22 @@ function main(): void {
   const descriptors: string[] = [];
   const seenNames = new Map<string, string>();
   const seenOperationIds = new Set<string>();
+  const scopeCatalog: Record<string, string> =
+    (
+      spec.components?.securitySchemes as
+        | { oauth2?: { flows?: { authorizationCode?: { scopes?: Record<string, string> } } } }
+        | undefined
+    )?.oauth2?.flows?.authorizationCode?.scopes ?? {};
+
+  const declaredScopes = new Set<string>(Object.keys(scopeCatalog));
+
+  if (declaredScopes.size === 0) {
+    throw new Error(
+      'The Forge document declares no OAuth scopes. Scope-based tool filtering would silently ' +
+        'become a no-op, so this fails rather than shipping an unfiltered surface.',
+    );
+  }
+
   let destructiveCount = 0;
   let asyncCount = 0;
   let pollableCount = 0;
@@ -1142,6 +1195,7 @@ function main(): void {
           },`,
           `    bodyRequired: ${Boolean(operation.requestBody?.required)},`,
           `    confirmationTargetFields: ${JSON.stringify(targetFields)},`,
+          `    scopes: ${JSON.stringify(collectScopes(operation, declaredScopes))},`,
           `    confirmBindsBody: ${requiresConfirm && hasRequestBody},`,
           `    idempotent: ${IDEMPOTENT_METHODS.has(method) && !NON_IDEMPOTENT_OPERATION_IDS.has(operationId)},`,
           `    polling: ${formatPollingPlan(pollingPlan)},`,
@@ -1292,6 +1346,23 @@ ${pendingEntries}
  */
 export const DEFAULT_PENDING_STATUSES: readonly string[] = ${JSON.stringify(
     [...defaultPending].sort(),
+  )};
+
+/**
+ * Every OAuth scope the Forge document declares, with its description.
+ *
+ * A Forge API token is minted with a chosen subset of these, which is the only
+ * privilege boundary Forge enforces server-side. Declaring the same subset in
+ * \`FORGE_SCOPES\` lets the server register just the tools that token can
+ * actually use, so a missing scope surfaces as an absent tool rather than a 403
+ * halfway through a task.
+ *
+ * @see https://forge.laravel.com/profile/api
+ */
+export const FORGE_SCOPES: Readonly<Record<string, string>> = ${JSON.stringify(
+    scopeCatalog,
+    null,
+    2,
   )};
 
 /** Every operation in the Forge API, in document order. */

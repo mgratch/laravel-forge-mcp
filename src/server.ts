@@ -63,6 +63,7 @@ export function createServer(options: CreateServerOptions): CreatedServer {
     schemas,
     defaultOrganization: config.organization,
     allowDestructive: config.allowDestructive,
+    scopes: config.scopes,
     pollTimeoutMs: config.pollTimeoutMs,
     pollIntervalMs: config.pollIntervalMs,
   });
