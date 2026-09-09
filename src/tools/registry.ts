@@ -14,6 +14,7 @@ import { ForgeApiError, ForgeConfirmationError } from '../client/errors.js';
 import { extractSelfLink } from '../client/jsonapi.js';
 import { pollUntilTerminal, readStatus, statusSettles } from '../client/polling.js';
 import { DEFAULT_PENDING_STATUSES, PENDING_STATUSES } from '../generated/operations.js';
+import { toSafeParamName } from './param-names.js';
 import { buildInputSchema, type JsonSchema, type SchemaRegistry } from './schema.js';
 import type { OperationDescriptor, PollingPlan } from './types.js';
 import { ArgumentValidator } from './validate.js';
@@ -236,6 +237,7 @@ export function buildToolRegistry(options: RegistryOptions): RegisteredTool[] {
     const supportsWait = supportsPolling(descriptor);
 
     const inputSchema = buildInputSchema({
+      toolName: descriptor.name,
       pathParams: descriptor.pathParams,
       queryParams: descriptor.queryParams,
       bodySchemaName: descriptor.bodySchema,
@@ -468,13 +470,19 @@ async function executeOperation(options: ExecuteOptions): Promise<unknown> {
 
   const query: Record<string, string | number | boolean | undefined> = {};
   for (const param of descriptor.queryParams) {
-    const value = resolvedArgs[param.name];
+    // The caller supplies the schema's alias (`page_size`); Forge wants the
+    // JSON:API name (`page[size]`). The alias exists only because a bracketed
+    // property name would invalidate the tool schema — see param-names.ts —
+    // so it is undone here and nothing about the request changes.
+    const argName = toSafeParamName(param.name);
+    const value = resolvedArgs[argName];
     if (value === undefined || value === null) continue;
     // Validated rather than cast: an object here would otherwise serialise as
     // "[object Object]" and silently produce a wrong query, which surfaces as a
-    // confusing empty result instead of an error.
-    query[param.name] = stringifyParam(param.name, value);
-    consumed.add(param.name);
+    // confusing empty result instead of an error. Reported under the name the
+    // caller actually typed.
+    query[param.name] = stringifyParam(argName, value);
+    consumed.add(argName);
   }
 
   const body = extractBody(descriptor, resolvedArgs, consumed);

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { OPERATIONS } from '../src/generated/operations.js';
+import { toSafeParamName } from '../src/tools/param-names.js';
 import { buildInputSchema } from '../src/tools/schema.js';
 import { loadSpecSchemas } from './helpers.js';
 
@@ -82,6 +83,7 @@ describe('generated operation table', () => {
 
     for (const operation of inlineOperations) {
       const schema = buildInputSchema({
+        toolName: operation.name,
         pathParams: operation.pathParams,
         queryParams: operation.queryParams,
         bodySchemaName: operation.bodySchema,
@@ -95,7 +97,7 @@ describe('generated operation table', () => {
       const properties = Object.keys(schema['properties'] as Record<string, unknown>);
       const reserved = new Set(['confirm', 'wait']);
       const pathNames = new Set(operation.pathParams.map((param) => param.name));
-      const queryNames = new Set(operation.queryParams.map((param) => param.name));
+      const queryNames = new Set(operation.queryParams.map((param) => toSafeParamName(param.name)));
 
       const bodyFields = properties.filter(
         (name) => !reserved.has(name) && !pathNames.has(name) && !queryNames.has(name),
@@ -113,6 +115,7 @@ describe('generated operation table', () => {
     if (!createServer) return;
 
     const schema = buildInputSchema({
+      toolName: createServer.name,
       pathParams: createServer.pathParams,
       queryParams: createServer.queryParams,
       bodySchemaName: createServer.bodySchema,
@@ -125,6 +128,38 @@ describe('generated operation table', () => {
 
     const properties = Object.keys(schema['properties'] as Record<string, unknown>);
     expect(properties).toContain('name');
+  });
+
+  it('gives every operation a schema an MCP client will accept', () => {
+    // The regression that motivated the alias: an MCP tool's property names are
+    // restricted to `^[a-zA-Z0-9_.-]{1,64}$`, and one violation invalidates the
+    // whole schema — the client drops the tool at load with nothing logged. It
+    // cost this server 46 of its 238 tools, every paginated list endpoint,
+    // while the server itself reported no error at all. Checked over the built
+    // schema rather than the alias function alone, because path parameters and
+    // lifted body properties become property names by the same route.
+    const safe = /^[a-zA-Z0-9_.-]{1,64}$/;
+    const offenders: string[] = [];
+
+    for (const operation of OPERATIONS) {
+      const schema = buildInputSchema({
+        toolName: operation.name,
+        pathParams: operation.pathParams,
+        queryParams: operation.queryParams,
+        bodySchemaName: operation.bodySchema,
+        bodySchemaInline: operation.bodySchemaInline,
+        bodyRequired: operation.bodyRequired,
+        registry: schemas,
+        requiresConfirm: operation.requiresConfirm,
+        supportsWait: operation.processingMode === 'async',
+      });
+
+      for (const property of Object.keys(schema['properties'] as Record<string, unknown>)) {
+        if (!safe.test(property)) offenders.push(`${operation.name}: ${property}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 
   it('marks a plausible number of operations destructive', () => {

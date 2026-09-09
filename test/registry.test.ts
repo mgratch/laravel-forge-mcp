@@ -302,10 +302,46 @@ describe('request assembly', () => {
     const stub = stubFetch([]);
     const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
 
-    // Caught by schema validation before it can reach URL assembly.
+    // Under the schema's alias, so this fails as a bad *value* rather than as
+    // an unknown property — otherwise `additionalProperties: false` would throw
+    // first and the check would pass without testing anything.
     await expect(
-      findTool(tools, 'list_servers').handler({ 'filter[name]': { evil: true } }),
+      findTool(tools, 'list_servers').handler({ filter_name: { evil: true } }),
     ).rejects.toThrow(ForgeValidationError);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('sends the JSON:API wire name for an aliased query parameter', async () => {
+    // The whole point of the alias: the schema may not say `page[size]`, but
+    // Forge only understands `page[size]`. If this ever regresses, pagination
+    // and filtering silently stop working — the request is still valid, it just
+    // ignores the parameter and returns a default page.
+    const stub = stubFetch([{ body: { data: [] } }]);
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
+
+    await findTool(tools, 'list_servers').handler({
+      page_size: 5,
+      page_cursor: 'abc',
+      filter_name: 'web-1',
+    });
+
+    const url = stub.requests[0]?.url ?? '';
+    const query = new URL(url).searchParams;
+
+    expect(query.get('page[size]')).toBe('5');
+    expect(query.get('page[cursor]')).toBe('abc');
+    expect(query.get('filter[name]')).toBe('web-1');
+    expect(query.get('page_size')).toBeNull();
+    expect(query.get('filter_name')).toBeNull();
+  });
+
+  it('refuses the raw bracketed name, which is not what the tool advertises', async () => {
+    const stub = stubFetch([]);
+    const tools = makeRegistry(stub, { organization: 'acme', only: ['list_servers'] });
+
+    await expect(findTool(tools, 'list_servers').handler({ 'page[size]': 5 })).rejects.toThrow(
+      ForgeValidationError,
+    );
     expect(stub.requests).toHaveLength(0);
   });
 

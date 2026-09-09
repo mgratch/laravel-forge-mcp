@@ -13,6 +13,7 @@
  *   - Descriptions carry the Mintlify HTML footer, which is stripped.
  */
 
+import { assertNoAliasCollisions, isAliasedParamName, toSafeParamName } from './param-names.js';
 import type { OperationParameter } from './types.js';
 
 /** A JSON Schema object, loose enough to carry any OpenAPI fragment. */
@@ -195,6 +196,8 @@ function stripUnsupported(schema: JsonSchema): JsonSchema {
  * silent corruption would be worse than an extra level of nesting.
  */
 export function buildInputSchema(options: {
+  /** Only for the collision error, which is useless without it. */
+  readonly toolName: string;
   readonly pathParams: readonly OperationParameter[];
   readonly queryParams: readonly OperationParameter[];
   readonly bodySchemaName: string | undefined;
@@ -220,13 +223,27 @@ export function buildInputSchema(options: {
     if (param.required) required.push(param.name);
   }
 
+  // Aliased, because Forge's list endpoints use JSON:API bracket syntax
+  // (`page[size]`, `filter[name]`) and a tool schema may not: a bracketed
+  // property name invalidates the whole schema and the tool is dropped rather
+  // than sanitised. See param-names.ts. registry.ts reverses the mapping when
+  // it builds the query, so the wire format is unchanged.
+  assertNoAliasCollisions(
+    options.queryParams.map((param) => param.name),
+    options.toolName,
+  );
+
   for (const param of options.queryParams) {
     if (omit.has(param.name)) continue;
-    properties[param.name] = {
+    const propertyName = toSafeParamName(param.name);
+    const aliasNote = isAliasedParamName(param.name) ? ` Sent as \`${param.name}\`.` : '';
+    const description = `${param.description}${aliasNote}`.trim();
+
+    properties[propertyName] = {
       ...resolveSchema(param.schema, options.registry),
-      ...(param.description === '' ? {} : { description: param.description }),
+      ...(description === '' ? {} : { description }),
     };
-    if (param.required) required.push(param.name);
+    if (param.required) required.push(propertyName);
   }
 
   const rawBodySchema =

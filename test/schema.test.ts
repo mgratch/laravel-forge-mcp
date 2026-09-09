@@ -106,6 +106,7 @@ describe('resolveSchema', () => {
 
 describe('buildInputSchema', () => {
   const baseOptions = {
+    toolName: 'list_servers_sites',
     pathParams: [
       {
         name: 'organization',
@@ -136,16 +137,69 @@ describe('buildInputSchema', () => {
 
     expect(properties['organization']).toBeDefined();
     expect(properties['server']).toBeDefined();
-    expect(properties['page[size]']).toBeDefined();
+    // Aliased: a bracketed property name would invalidate the whole schema.
+    expect(properties['page_size']).toBeDefined();
+    expect(properties['page[size]']).toBeUndefined();
   });
 
-  it('marks only required parameters as required', () => {
+  it('records the wire name in the aliased parameter description', () => {
+    // Without this the caller has no way to know `page_size` is `page[size]`
+    // on the wire, which matters as soon as they read Forge's own docs.
     const schema = buildInputSchema(baseOptions);
+    const properties = schema['properties'] as Record<string, Record<string, unknown>>;
+
+    expect(properties['page_size']?.['description']).toBe('Items per page. Sent as `page[size]`.');
+  });
+
+  it('leaves an already-valid query parameter name alone', () => {
+    const schema = buildInputSchema({
+      ...baseOptions,
+      queryParams: [
+        { name: 'sort', required: false, description: 'Sort order.', schema: { type: 'string' } },
+      ],
+    });
+    const properties = schema['properties'] as Record<string, Record<string, unknown>>;
+
+    expect(properties['sort']).toBeDefined();
+    expect(properties['sort']?.['description']).toBe('Sort order.');
+  });
+
+  it('marks only required parameters as required, under the aliased name', () => {
+    const schema = buildInputSchema({
+      ...baseOptions,
+      queryParams: [
+        {
+          name: 'filter[name]',
+          required: true,
+          description: 'Name filter.',
+          schema: { type: 'string' },
+        },
+      ],
+    });
     const required = schema['required'] as string[];
 
     expect(required).toContain('organization');
     expect(required).toContain('server');
-    expect(required).not.toContain('page[size]');
+    expect(required).toContain('filter_name');
+    expect(required).not.toContain('filter[name]');
+  });
+
+  it('does not mark an optional query parameter as required', () => {
+    const required = buildInputSchema(baseOptions)['required'] as string[];
+
+    expect(required).not.toContain('page_size');
+  });
+
+  it('refuses two query parameters that would share one property name', () => {
+    expect(() =>
+      buildInputSchema({
+        ...baseOptions,
+        queryParams: [
+          { name: 'filter[a.b]', required: false, description: '', schema: { type: 'string' } },
+          { name: 'filter[a_b]', required: false, description: '', schema: { type: 'string' } },
+        ],
+      }),
+    ).toThrow(/list_servers_sites/);
   });
 
   it('omits parameters the server supplies itself', () => {
