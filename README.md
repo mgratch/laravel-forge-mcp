@@ -55,6 +55,7 @@ Generate a token at [forge.laravel.com/profile/api](https://forge.laravel.com/pr
 | `FORGE_API_BASE_URL`          | no       | `https://forge.laravel.com/api` | Override the base URL, for testing against a mock.                                                                                    |
 | `FORGE_TIMEOUT_MS`            | no       | `30000`                         | Per-request timeout.                                                                                                                  |
 | `FORGE_MAX_RETRIES`           | no       | `3`                             | Retry attempts for 429 and 5xx responses.                                                                                             |
+| `FORGE_SCOPES`                | no       | unset                           | Scopes your token holds. Registers only the tools they cover. Run `--scopes` for the list. Unset registers everything.                |
 | `FORGE_POLL_TIMEOUT_MS`       | no       | per operation                   | Overrides the polling budget. Defaults to 30 min for server provisioning, 2 min elsewhere.                                            |
 | `FORGE_POLL_INTERVAL_MS`      | no       | per operation                   | Overrides the initial polling interval.                                                                                               |
 
@@ -66,6 +67,31 @@ rather than a disclaimer.
 Arguments are validated against each tool's advertised JSON Schema **before** the confirmation
 guard and before any network call, so an unknown or malformed argument fails with a clear message
 and issues no request.
+
+### Token scopes are the boundary that actually binds
+
+A Forge API token is minted at [forge.laravel.com/profile/api](https://forge.laravel.com/profile/api)
+with a chosen subset of the API's 62 scopes, and **that subset is the only privilege boundary Forge
+enforces server-side.** A token without `server:delete` cannot delete a server whatever any client
+does. The two gates below are ergonomics on top of it, not the wall — so choose scopes first.
+
+```bash
+node dist/index.js --scopes    # every scope, what it unlocks, and ready-made profiles
+```
+
+Declare the same set in `FORGE_SCOPES` and only the tools those scopes cover are registered. A
+missing scope then shows up as an absent tool, before a model has planned around it, instead of a
+403 halfway through a task. Forge has no token-introspection endpoint, so this has to be stated
+rather than discovered.
+
+> [!WARNING]
+> **Three `:view` scopes permit writes, and two of them permit arbitrary code execution.**
+> `server:view` gates all ten scheduled-job endpoints — _including create and delete_ — and a
+> scheduled job carries an arbitrary command plus the user to run it as. `recipe:view` permits
+> running a custom recipe. `credential:view` permits creating and deleting server credentials.
+> Forge declares purpose-built `server:create-schedulers` / `server:delete-schedulers` scopes but
+> does not apply them to those endpoints. `--scopes` lists every case. Only three of the 62 scopes
+> are genuinely read-only, which is why the `read-only` profile covers just 25 of 273 tools.
 
 **Two independent gates protect destructive operations:**
 
@@ -146,7 +172,7 @@ See [`docs/TOOLS.md`](docs/TOOLS.md) for the full catalog, including which tools
 | [Rate limiting](https://forge.laravel.com/docs/api-reference/rate-limiting)      | 60 req/min is paced locally _and_ reconciled against `X-RateLimit-Remaining`. 429s are retried using `Retry-After`.                                                                                                                                                               |
 | [Async operations](https://forge.laravel.com/docs/api-reference/introduction)    | 105 operations are marked asynchronous; 98 answer `202 Accepted` and seven complete inline with a 200 or 204. `wait: true` is advertised only where the spec shows a way to observe completion _and_ to prove the call took effect, so no tool promises a wait it cannot perform. |
 | [JSON:API envelopes](https://forge.laravel.com/docs/api-reference/relationships) | `{data: {id, type, attributes: {…}}}` is flattened to `{id, type, …}` so models spend tokens on data, not structure.                                                                                                                                                              |
-| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | `page[cursor]` / `meta.next_cursor` are handled; no page numbers or totals exist in this API.                                                                                                                                                                                     |
+| [Cursor pagination](https://forge.laravel.com/docs/api-reference/pagination)     | Pass `page_size` / `page_cursor`; the request sends `page[size]` / `page[cursor]`, because brackets are not legal in an MCP property name. `meta.next_cursor` is handled; no page numbers or totals exist in this API.                                                            |
 | Errors                                                                           | 401/403/404/409/422/429/503 each carry a specific remediation hint. 422 responses surface Forge's per-field validation detail.                                                                                                                                                    |
 | Transient failures                                                               | 429 and 5xx are retried with full-jitter exponential backoff; 4xx are not, because they fail identically on retry.                                                                                                                                                                |
 

@@ -17,6 +17,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { ForgeError } from './client/errors.js';
 import { loadConfig } from './config.js';
+import { renderScopeReport } from './scopes.js';
 import { createServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 import type { SchemaRegistry } from './tools/schema.js';
 
@@ -37,6 +38,13 @@ function loadSchemas(): SchemaRegistry {
 }
 
 async function main(): Promise<void> {
+  // A reporting flag, not a server mode: it needs no token and starts no
+  // transport, so it can be run before anyone has credentials at all.
+  if (process.argv.includes('--scopes')) {
+    process.stdout.write(renderScopeReport());
+    return;
+  }
+
   const config = loadConfig();
   const schemas = loadSchemas();
 
@@ -50,6 +58,7 @@ async function main(): Promise<void> {
     `${SERVER_NAME} ${SERVER_VERSION} ready — ${tools.length} tools` +
       (config.allowDestructive ? ' (destructive operations enabled)' : '') +
       (config.organization === undefined ? '' : ` — org "${config.organization}"`) +
+      (config.scopes === undefined ? '' : ` — ${config.scopes.size} scopes declared`) +
       '\n',
   );
 }
